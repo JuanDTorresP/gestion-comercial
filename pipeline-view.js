@@ -84,9 +84,16 @@ function puedeEditar(deal) {
   const u = obtenerUsuario();
   return u && deal.rep === u.nombreRep;
 }
+// Base visible según el rol: Gerencia ve todo el pipeline;
+// un vendedor SOLO sus propias oportunidades.
+function baseDeals() {
+  if (esAdmin()) return deals;
+  const u = obtenerUsuario();
+  return deals.filter(d => d.rep === u?.nombreRep);
+}
 function valoresUnicos(campo, base = []) {
   const set = new Set(base);
-  deals.forEach(d => { const v = d[campo]; if (v !== undefined && v !== null && String(v).trim() !== "") set.add(String(v).trim()); });
+  baseDeals().forEach(d => { const v = d[campo]; if (v !== undefined && v !== null && String(v).trim() !== "") set.add(String(v).trim()); });
   return [...set].sort((a, b) => String(a).localeCompare(String(b), "es"));
 }
 // Valor esperado de un deal (usa el guardado o lo calcula)
@@ -199,7 +206,7 @@ function pintarEstructura() {
         <input class="filtro-input" id="pl-f-texto" placeholder="🔍 Buscar oportunidad, cuenta o broker..."/>
       </div>
       <div class="filtros-bar">
-        <select class="filtro-select" id="pl-f-rep"><option value="">Rep: Todos</option></select>
+        <select class="filtro-select" id="pl-f-rep" style="${esAdmin() ? "" : "display:none"}"><option value="">Rep: Todos</option></select>
         <select class="filtro-select" id="pl-f-estado"><option value="">Estado: Todos</option></select>
         <select class="filtro-select" id="pl-f-tipo"><option value="">Tipo: Todos</option></select>
         <select class="filtro-select" id="pl-f-canal"><option value="">Canal: Todos</option></select>
@@ -511,7 +518,7 @@ function renderDashboard() {
 // TABLA (sub-vista Oportunidades)
 // ═══════════════════════════════════════════
 function renderTabla() {
-  const visibles = deals.filter(d => {
+  const visibles = baseDeals().filter(d => {
     if (filtros.rep && d.rep !== filtros.rep) return false;
     if (filtros.estado && d.estado !== filtros.estado) return false;
     if (filtros.tipo && String(d.tipo || "").trim() !== filtros.tipo) return false;
@@ -543,7 +550,7 @@ function renderTabla() {
       <div class="m-sub">${ganados.length} oportunidades</div></div>
     <div class="m-card"><div class="m-lbl">Registros</div>
       <div class="m-val">${visibles.length}</div>
-      <div class="m-sub">de ${deals.length} en la base</div></div>
+      <div class="m-sub">de ${baseDeals().length} en la base</div></div>
   `;
 
   const orden = [...visibles].sort((a, b) => {
