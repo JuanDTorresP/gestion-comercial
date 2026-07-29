@@ -202,7 +202,7 @@ function pintarEstructura() {
       </div>
       <div class="pl-g2" style="margin-bottom:16px">
         <div class="card" style="margin-bottom:0">
-          <p class="section-lbl">Ganado vs Perdido por mes (${ANIO_CUOTA})</p>
+          <p class="section-lbl">Ganado vs Perdido por mes de radicación (histórico)</p>
           <div style="height:200px;position:relative"><canvas id="ch-gvp"></canvas></div>
         </div>
         <div class="card" style="margin-bottom:0">
@@ -447,6 +447,13 @@ function renderDashboard() {
   const vPerdido = perdidos.reduce((s, d) => s + (parseFloat(d.valor) || 0), 0);
   const vEsp = activos.reduce((s, d) => s + esperadoDe(d), 0);
 
+  // Totales HISTÓRICOS (todos los años) — lo que muestran las tarjetas.
+  // El forecast y la dona siguen usando solo el año de cuota.
+  const ganadosAll = propios.filter(d => d.estado === "Ganado");
+  const perdidosAll = propios.filter(d => d.estado === "Perdido");
+  const vGanadoAll = ganadosAll.reduce((s, d) => s + (parseFloat(d.valor) || 0), 0);
+  const vPerdidoAll = perdidosAll.reduce((s, d) => s + (parseFloat(d.valor) || 0), 0);
+
   const cuota = esAdmin()
     ? Object.values(CUOTAS).reduce((s, c) => s + c, 0)
     : (CUOTAS[u.nombreRep] || 0);
@@ -458,18 +465,18 @@ function renderDashboard() {
     <div class="m-card"><div class="m-lbl">Cuota ${ANIO_CUOTA}</div>
       <div class="m-val">${fmt(cuota)}</div>
       <div class="m-sub">${esAdmin() ? "equipo completo" : "mi cuota"}</div></div>
-    <div class="m-card clic" id="dc-ganado"><div class="m-lbl">Ganado</div>
-      <div class="m-val" style="color:var(--green)">${fmt(vGanado)}</div>
-      <div class="m-sub">${ganados.length} oportunidades · clic para ver</div></div>
+    <div class="m-card clic" id="dc-ganado"><div class="m-lbl">Ganado (total)</div>
+      <div class="m-val" style="color:var(--green)">${fmt(vGanadoAll)}</div>
+      <div class="m-sub">${ganadosAll.length} ops · ${fmt(vGanado)} de ${ANIO_CUOTA} · clic para ver</div></div>
     <div class="m-card clic" id="dc-activo"><div class="m-lbl">Pipeline activo</div>
       <div class="m-val" style="color:var(--blue)">${fmt(vActivo)}</div>
       <div class="m-sub">esperado: ${fmt(vEsp)}</div></div>
     <div class="m-card"><div class="m-lbl">Forecast</div>
       <div class="m-val" style="color:${colorF}">${fPct}%</div>
       <div class="m-sub">(ganado + esperado) / cuota</div></div>
-    <div class="m-card clic" id="dc-perdido"><div class="m-lbl">Perdido</div>
-      <div class="m-val" style="color:var(--red)">${fmt(vPerdido)}</div>
-      <div class="m-sub">${perdidos.length} oportunidades · clic para ver</div></div>
+    <div class="m-card clic" id="dc-perdido"><div class="m-lbl">Perdido (total)</div>
+      <div class="m-val" style="color:var(--red)">${fmt(vPerdidoAll)}</div>
+      <div class="m-sub">${perdidosAll.length} ops · ${fmt(vPerdido)} de ${ANIO_CUOTA} · clic para ver</div></div>
   `;
   $("dc-ganado").addEventListener("click", () => irATablaFiltrada("Ganado"));
   $("dc-perdido").addEventListener("click", () => irATablaFiltrada("Perdido"));
@@ -558,7 +565,7 @@ function renderDashboard() {
 
   // ── Ganado vs Perdido por mes + Motivos de pérdida ──
   const gvp = {};
-  delAnio.forEach(d => {
+  propios.forEach(d => {
     if (d.estado !== "Ganado" && d.estado !== "Perdido") return;
     const m = String(d.mes_radicacion || "").toLowerCase();
     if (!MESES.includes(m)) return;
@@ -588,7 +595,7 @@ function renderDashboard() {
   });
 
   const motivos = {};
-  perdidos.forEach(d => {
+  perdidosAll.forEach(d => {
     const m = String(d.motivo_perdida || "").trim() || "Sin motivo";
     motivos[m] = (motivos[m] || 0) + 1;
   });

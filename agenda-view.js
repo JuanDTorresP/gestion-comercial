@@ -225,6 +225,9 @@ function pintarEstructura() {
       .eq-big{font-size:26px;font-weight:700;line-height:1}
       .eq-big-sub{font-size:11px;color:var(--txt3);margin-top:2px}
       .eq-rows{margin-top:10px;font-size:12px;color:var(--txt2);display:grid;grid-template-columns:1fr 1fr;gap:5px}
+      .eq-btns{display:flex;gap:6px;margin-top:12px}
+      .eq-btn{flex:1;padding:7px 4px;font-size:11px;font-weight:600;border-radius:8px;border:none;background:var(--s2);cursor:pointer;font-family:inherit;color:var(--txt2)}
+      .eq-btn:hover{background:var(--blue-l);color:#1d4ed8}
       .link-box{grid-column:1/-1;background:var(--blue-l);border:1.5px solid #bfdbfe;border-radius:10px;padding:12px}
       .link-box .form-label{color:#1d4ed8}
       .link-nota{font-size:11px;color:#1d4ed8;margin-top:6px}
@@ -277,7 +280,7 @@ function pintarEstructura() {
         <select class="filtro-select" id="eq-mes"></select>
         <span class="filtro-conteo" id="eq-conteo"></span>
       </div>
-      <p class="hint">💡 Haz clic en un rep para abrir su reporte mensual detallado.</p>
+      <p class="hint">💡 Haz clic en un rep para su reporte mensual, o usa los botones para ver su semana o su mes.</p>
       <div class="eq-grid" id="eq-cards"></div>
     </div>
 
@@ -764,19 +767,39 @@ function renderEquipo() {
         <span>🏢 ${cuentas} cuentas</span>
         <span>✨ ${nuevos} nuevos</span>
       </div>
+      <div class="eq-btns">
+        <button class="eq-btn" data-accion="sem">🗓 Ver semana</button>
+        <button class="eq-btn" data-accion="mes">📊 Ver mes</button>
+      </div>
     </div>`;
   }).join("");
 
+  const irMensualRep = (nombre) => {
+    filtros.rep = nombre;
+    filtros.mes = eqMes;
+    filtros.tipo = ""; filtros.etapa = ""; filtros.tipoCliente = ""; filtros.texto = "";
+    $("ag-f-rep").value = filtros.rep;
+    $("ag-f-mes").value = filtros.mes;
+    $("ag-f-tipo").value = ""; $("ag-f-etapa").value = ""; $("ag-f-texto").value = "";
+    renderMensual();
+    mostrarSub("mes");
+  };
+  const irSemanaRep = (nombre) => {
+    semRep = nombre; semTipo = ""; semMod = "";
+    semanaOffset = 0;
+    $("sem-f-rep").value = nombre;
+    renderSemana();
+    mostrarSub("sem");
+  };
+
   cont.querySelectorAll(".eq-card").forEach(card => {
-    card.addEventListener("click", () => {
-      filtros.rep = card.dataset.rep;
-      filtros.mes = eqMes;
-      filtros.tipo = ""; filtros.etapa = ""; filtros.tipoCliente = ""; filtros.texto = "";
-      $("ag-f-rep").value = filtros.rep;
-      $("ag-f-mes").value = filtros.mes;
-      $("ag-f-tipo").value = ""; $("ag-f-etapa").value = ""; $("ag-f-texto").value = "";
-      renderMensual();
-      mostrarSub("mes");
+    card.addEventListener("click", () => irMensualRep(card.dataset.rep));
+    card.querySelectorAll(".eq-btn").forEach(btn => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (btn.dataset.accion === "sem") irSemanaRep(card.dataset.rep);
+        else irMensualRep(card.dataset.rep);
+      });
     });
   });
 }
