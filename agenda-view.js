@@ -79,6 +79,13 @@ function puedeEditar(g) {
   const u = obtenerUsuario();
   return u && g.rep === u.nombreRep;
 }
+// Base de datos visible según el rol:
+// Gerencia ve todo; un vendedor SOLO sus propias gestiones.
+function baseGestiones() {
+  if (esAdmin()) return gestiones;
+  const u = obtenerUsuario();
+  return gestiones.filter(g => g.rep === u?.nombreRep);
+}
 function chip(txt, bg, cl) {
   return txt ? `<span class="badge" style="background:${bg};color:${cl}">${esc(txt)}</span>` : "";
 }
@@ -196,6 +203,18 @@ function pintarEstructura() {
       .cmp-tbl td:first-child,.cmp-tbl th:first-child{text-align:left;color:var(--txt2)}
       .cmp-delta{font-size:11px;font-weight:700;border-radius:99px;padding:1px 8px}
       .hint{font-size:11px;color:var(--txt3);margin:-8px 0 12px}
+      .rep-hero{background:linear-gradient(135deg,#1e3a8a,#2563EB);border-radius:12px;padding:24px;color:#fff;margin-bottom:16px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px}
+      .rep-hero-name{font-size:22px;font-weight:700;margin-bottom:4px}
+      .rep-hero-sub{font-size:13px;opacity:.75}
+      .rep-hero button{background:rgba(255,255,255,.18)}
+      .rep-hero button:hover{background:rgba(255,255,255,.3)}
+      .rep-metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:16px}
+      .rep-metric{background:var(--surface);border-radius:var(--r);border:.5px solid var(--border);padding:14px;cursor:pointer;transition:transform .15s,box-shadow .15s}
+      .rep-metric:hover{transform:translateY(-2px);box-shadow:0 4px 12px rgba(0,0,0,0.1)}
+      .rep-metric-lbl{font-size:11px;color:var(--txt2);margin-bottom:4px}
+      .rep-metric-val{font-size:20px;font-weight:700;color:var(--txt)}
+      .rep-metric-sub{font-size:11px;color:var(--txt3);margin-top:2px}
+      @media(max-width:480px){.rep-metrics{grid-template-columns:1fr 1fr}.rep-hero{padding:18px}.rep-hero-name{font-size:18px}}
       .link-box{grid-column:1/-1;background:var(--blue-l);border:1.5px solid #bfdbfe;border-radius:10px;padding:12px}
       .link-box .form-label{color:#1d4ed8}
       .link-nota{font-size:11px;color:#1d4ed8;margin-top:6px}
@@ -211,13 +230,17 @@ function pintarEstructura() {
     </div>
 
     <div class="ag-subtabs">
-      <button class="ag-subtab active" id="ag-st-sem">🗓 Semana actual</button>
+      ${esAdmin() ? "" : `<button class="ag-subtab active" id="ag-st-mia">👤 Mi Agenda</button>`}
+      <button class="ag-subtab ${esAdmin() ? "active" : ""}" id="ag-st-sem">🗓 Semana actual</button>
       <button class="ag-subtab" id="ag-st-mes">📊 Reporte mensual</button>
       <button class="ag-subtab" id="ag-st-cmp">🔁 Comparar meses</button>
     </div>
 
+    <!-- ═══ MI AGENDA (solo reps: únicamente SUS gestiones) ═══ -->
+    <div id="ag-sub-mia" style="display:${esAdmin() ? "none" : "block"}"></div>
+
     <!-- ═══ SEMANA ═══ -->
-    <div id="ag-sub-sem">
+    <div id="ag-sub-sem" style="display:${esAdmin() ? "block" : "none"}">
       <div class="filtros-bar">
         <div class="sem-nav">
           <button id="sem-prev" title="Semana anterior">◀</button>
@@ -225,7 +248,7 @@ function pintarEstructura() {
           <button id="sem-next" title="Semana siguiente">▶</button>
         </div>
         <button class="btn-secundario" id="sem-hoy" style="padding:7px 12px;font-size:12px">Hoy</button>
-        <select class="filtro-select" id="sem-f-rep"><option value="">Rep: Todos</option></select>
+        <select class="filtro-select" id="sem-f-rep" style="${esAdmin() ? "" : "display:none"}"><option value="">Rep: Todos</option></select>
         <span class="filtro-conteo" id="sem-conteo"></span>
       </div>
       <div class="m-grid" id="sem-metricas"></div>
@@ -254,7 +277,7 @@ function pintarEstructura() {
       <div class="filtros-bar">
         <input class="filtro-input" id="ag-f-texto" placeholder="🔍 Buscar cuenta, oportunidad o ciudad..."/>
         <select class="filtro-select" id="ag-f-mes"><option value="">Mes: Todos</option></select>
-        <select class="filtro-select" id="ag-f-rep"><option value="">Rep: Todos</option></select>
+        <select class="filtro-select" id="ag-f-rep" style="${esAdmin() ? "" : "display:none"}"><option value="">Rep: Todos</option></select>
         <select class="filtro-select" id="ag-f-tipo">
           <option value="">Tipo: Todos</option>
           <option>Comercial</option>
@@ -387,6 +410,7 @@ function pintarEstructura() {
   }
 
   // Sub-pestañas
+  if (!esAdmin()) $("ag-st-mia").addEventListener("click", () => mostrarSub("mia"));
   $("ag-st-sem").addEventListener("click", () => mostrarSub("sem"));
   $("ag-st-mes").addEventListener("click", () => mostrarSub("mes"));
   $("ag-st-cmp").addEventListener("click", () => mostrarSub("cmp"));
@@ -430,6 +454,11 @@ function pintarEstructura() {
 }
 
 function mostrarSub(nombre) {
+  const mia = $("ag-st-mia");
+  if (mia) {
+    mia.classList.toggle("active", nombre === "mia");
+    $("ag-sub-mia").style.display = nombre === "mia" ? "block" : "none";
+  }
   $("ag-st-sem").classList.toggle("active", nombre === "sem");
   $("ag-st-mes").classList.toggle("active", nombre === "mes");
   $("ag-st-cmp").classList.toggle("active", nombre === "cmp");
@@ -439,7 +468,7 @@ function mostrarSub(nombre) {
 }
 
 function mesesEnDatos() {
-  return [...new Set(gestiones.map(mesDe).filter(m => /^\d{4}-\d{2}$/.test(m)))].sort().reverse();
+  return [...new Set(baseGestiones().map(mesDe).filter(m => /^\d{4}-\d{2}$/.test(m)))].sort().reverse();
 }
 
 function actualizarOpcionesFiltros() {
@@ -473,7 +502,7 @@ function actualizarOpcionesFiltros() {
   llenarCmp("cmp-b", cmpB);
 
   const dl = (id, campo) => {
-    const vals = [...new Set(gestiones.map(g => String(g[campo] || "").trim()).filter(Boolean))].sort();
+    const vals = [...new Set(baseGestiones().map(g => String(g[campo] || "").trim()).filter(Boolean))].sort();
     const el = $(id);
     if (el) el.innerHTML = vals.map(v => `<option value="${esc(v)}">`).join("");
   };
@@ -538,9 +567,127 @@ function sugerirEstadoDesdeEtapa() {
 // RENDER GENERAL
 // ═══════════════════════════════════════════
 function render() {
+  renderMiAgenda();
   renderSemana();
   renderMensual();
   renderComparar();
+}
+
+// ═══════════════════════════════════════════
+// 👤 MI AGENDA (vista personal del rep, como la app original)
+// ═══════════════════════════════════════════
+function miaMetric(id, lbl, val, sub, style) {
+  return `<div class="rep-metric" id="${id}">
+    <div class="rep-metric-lbl">${lbl}</div>
+    <div class="rep-metric-val" style="${style}">${val}</div>
+    <div class="rep-metric-sub">${sub}</div></div>`;
+}
+
+function renderMiAgenda() {
+  if (esAdmin()) return;
+  const cont = $("ag-sub-mia");
+  if (!cont) return;
+  const u = obtenerUsuario();
+  const mias = baseGestiones();
+  const hoy = new Date();
+
+  // Semana actual
+  const lunes = lunesDe(0);
+  const domingo = new Date(lunes); domingo.setDate(lunes.getDate() + 6);
+  const desde = claveFecha(lunes), hasta = claveFecha(domingo);
+  const sem = mias.filter(g => (g.fecha || "") >= desde && (g.fecha || "") <= hasta);
+
+  // Mes actual
+  const mesClave = `${hoy.getFullYear()}-${pad(hoy.getMonth() + 1)}`;
+  const mes = mias.filter(g => mesDe(g) === mesClave);
+  const mesCom = mes.filter(g => g.tipo === "Comercial");
+  const mesOp = mes.filter(g => g.tipo === "Operativo");
+  const mesNuevos = mes.filter(g => g.tipoCliente === "Nuevo");
+  const cuentasMes = new Set(mes.map(g => String(g.cuenta || "").trim()).filter(Boolean)).size;
+
+  cont.innerHTML = `
+    <div class="rep-hero">
+      <div>
+        <div class="rep-hero-name">👋 ${esc((u.nombreRep || "").split(" ")[0])}</div>
+        <div class="rep-hero-sub">${hoy.toLocaleDateString("es-CO", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}</div>
+      </div>
+      <button class="btn-primario" id="mia-btn-nueva">＋ Registrar gestión</button>
+    </div>
+    <div class="rep-metrics">
+      ${miaMetric("mia-sem", "Esta semana", sem.length, "gestiones", "")}
+      ${miaMetric("mia-mes", "Este mes", mes.length, MESES_NOMBRE[hoy.getMonth()] + " " + hoy.getFullYear(), "")}
+      ${miaMetric("mia-com", "Comercial", mesCom.length, Math.round(mesCom.length / (mes.length || 1) * 100) + "% del mes", "color:#1d4ed8")}
+      ${miaMetric("mia-op", "Operativo", mesOp.length, Math.round(mesOp.length / (mes.length || 1) * 100) + "% del mes", "color:#15803d")}
+      ${miaMetric("mia-nue", "Clientes nuevos", mesNuevos.length, "este mes", "color:#d97706")}
+      ${miaMetric("mia-cta", "Cuentas únicas", cuentasMes, "este mes", "color:#7c3aed")}
+    </div>
+    <div class="card">
+      <p class="section-lbl">Mi actividad esta semana</p>
+      <div style="height:170px;position:relative"><canvas id="mia-ch"></canvas></div>
+    </div>
+    <div class="card">
+      <p class="section-lbl">Mis últimas gestiones (30 días)</p>
+      <div id="mia-lista"></div>
+    </div>
+  `;
+
+  // Botón registrar + métricas clicables (llevan a la vista filtrada)
+  $("mia-btn-nueva").addEventListener("click", () => abrirModal(null));
+  const irMensual = (tipo, tipoCliente) => {
+    filtros.mes = mesClave; filtros.tipo = tipo || ""; filtros.tipoCliente = tipoCliente || "";
+    filtros.etapa = ""; filtros.texto = "";
+    $("ag-f-mes").value = mesClave; $("ag-f-tipo").value = filtros.tipo;
+    $("ag-f-etapa").value = ""; $("ag-f-texto").value = "";
+    renderMensual();
+    mostrarSub("mes");
+  };
+  $("mia-sem").addEventListener("click", () => mostrarSub("sem"));
+  $("mia-mes").addEventListener("click", () => irMensual("", ""));
+  $("mia-com").addEventListener("click", () => irMensual("Comercial", ""));
+  $("mia-op").addEventListener("click", () => irMensual("Operativo", ""));
+  $("mia-nue").addEventListener("click", () => irMensual("", "Nuevo"));
+  $("mia-cta").addEventListener("click", () => irMensual("", ""));
+
+  // Gráfica: mi actividad de la semana (apilada por día)
+  const datosCom = [], datosOpe = [], etiquetas = [];
+  for (let i = 0; i < 7; i++) {
+    const dia = new Date(lunes); dia.setDate(lunes.getDate() + i);
+    const clave = claveFecha(dia);
+    const delDia = sem.filter(g => g.fecha === clave);
+    datosCom.push(delDia.filter(g => g.tipo === "Comercial").length);
+    datosOpe.push(delDia.filter(g => g.tipo !== "Comercial").length);
+    etiquetas.push(DIAS_NOMBRE[i].slice(0, 3));
+  }
+  mkChart("mia-ch", {
+    type: "bar",
+    data: {
+      labels: etiquetas,
+      datasets: [
+        { label: "Comerciales", data: datosCom, backgroundColor: "#2563EB", borderRadius: 4 },
+        { label: "Operativas", data: datosOpe, backgroundColor: "#9b9b96", borderRadius: 4 }
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { position: "top", labels: { boxWidth: 10, font: { size: 11 } } } },
+      scales: { x: { stacked: true, grid: { display: false } }, y: { stacked: true, ticks: { precision: 0 } } }
+    }
+  });
+
+  // Mis últimas gestiones (30 días)
+  const limite = new Date(hoy); limite.setDate(hoy.getDate() - 30);
+  const desde30 = claveFecha(limite);
+  const ult = mias.filter(g => (g.fecha || "") >= desde30);
+  const porFecha = {};
+  ult.forEach(g => { const f = g.fecha || "0000-00-00"; (porFecha[f] = porFecha[f] || []).push(g); });
+  const fechas = Object.keys(porFecha).sort().reverse();
+  $("mia-lista").innerHTML = fechas.length === 0
+    ? `<div class="lista-vacia">Aún no tienes gestiones en los últimos 30 días. Usa "＋ Registrar gestión" para cargar tu agenda.</div>`
+    : fechas.map(f => `<div class="ag-dia">
+        <div class="ag-dia-hdr"><span>${fechaLegible(f)}</span><span>${porFecha[f].length}</span></div>
+        ${porFecha[f].sort((a, b) => String(b.hora || "").localeCompare(String(a.hora || ""))).map(itemHtml).join("")}
+      </div>`).join("");
+  activarBotonesEditar($("mia-lista"));
 }
 
 // ═══════════════════════════════════════════
@@ -555,7 +702,7 @@ function renderSemana() {
     `${lunes.getDate()} ${MESES_NOMBRE[lunes.getMonth()].slice(0,3)} — ${domingo.getDate()} ${MESES_NOMBRE[domingo.getMonth()].slice(0,3)} ${domingo.getFullYear()}` +
     (semanaOffset === 0 ? " (actual)" : "");
 
-  const enSemana = gestiones.filter(g => {
+  const enSemana = baseGestiones().filter(g => {
     const f = g.fecha || "";
     return f >= desde && f <= hasta && (!semRep || g.rep === semRep);
   });
@@ -651,7 +798,7 @@ function renderSemana() {
 // 📊 MENSUAL (interactivo)
 // ═══════════════════════════════════════════
 function filtrarMensual() {
-  return gestiones.filter(g => {
+  return baseGestiones().filter(g => {
     if (filtros.mes && mesDe(g) !== filtros.mes) return false;
     if (filtros.rep && g.rep !== filtros.rep) return false;
     if (filtros.tipo && g.tipo !== filtros.tipo) return false;
@@ -784,7 +931,7 @@ function renderMensual() {
 // 🔁 COMPARAR MESES
 // ═══════════════════════════════════════════
 function statsMes(clave) {
-  const del = gestiones.filter(g => mesDe(g) === clave);
+  const del = baseGestiones().filter(g => mesDe(g) === clave);
   return {
     total: del.length,
     comerciales: del.filter(g => g.tipo === "Comercial").length,
