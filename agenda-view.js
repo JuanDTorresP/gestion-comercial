@@ -17,7 +17,7 @@ import {
 } from "./firestore-service.js";
 
 // ── Constantes de negocio ──
-const REPS_BASE = ["Patricia Lopera", "Clemencia Rodriguez", "Ivan Muñoz"];
+const REPS_BASE = ["Patricia Lopera", "Clemencia Rodriguez", "Ivan Muñoz", "Johana Mayo"];
 const ETAPAS = ["Identificado", "Seguimiento", "Cotización", "Diseño", "Negociación"];
 const ETAPA_COLORS = { "Identificado": "#2563EB", "Seguimiento": "#7c3aed", "Cotización": "#d97706", "Diseño": "#dc2626", "Negociación": "#16a34a" };
 const REP_COLORS = ["#2563EB", "#16a34a", "#7c3aed", "#d97706", "#dc2626", "#0d9488"];

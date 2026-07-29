@@ -15,7 +15,7 @@ import { suscribirDeals, crearDeal, actualizarDeal, eliminarDeal } from "./fires
 // ═══════════════════════════════════════════
 // ⚙️ CUOTAS 2026 — EDITAR AQUÍ CUANDO CAMBIEN
 // La cuota total del equipo es la suma de estas.
-// Si Elizabeth sale del equipo, borra su línea y su cuota
+// Si alguien sale del equipo, borra su línea y su cuota
 // deja de contar automáticamente.
 // ═══════════════════════════════════════════
 const ANIO_CUOTA = 2026;
@@ -23,7 +23,7 @@ const CUOTAS = {
   "Patricia Lopera":      4500000000,
   "Clemencia Rodriguez":  4500000000,
   "Ivan Muñoz":           4500000000,
-  "Elizabeth":            5400000000
+  "Johana Mayo":          5400000000
 };
 
 // ── Constantes de negocio (mismas del Pipeline viejo) ──
@@ -31,7 +31,7 @@ const ESTADOS = ["Identificado", "Cotizado", "En diseño", "Negociación", "On h
 const ESTADOS_ACTIVOS = new Set(["Identificado", "Cotizado", "En diseño", "Negociación", "On hold"]);
 const ORDEN_EMBUDO = ["Identificado", "Cotizado", "En diseño", "Negociación", "On hold"];
 const COLORES_EMBUDO = ["#6d28d9", "#1d4ed8", "#0f766e", "#15803d", "#b45309"];
-const REPS_BASE = ["Patricia Lopera", "Clemencia Rodriguez", "Ivan Muñoz"];
+const REPS_BASE = ["Patricia Lopera", "Clemencia Rodriguez", "Ivan Muñoz", "Johana Mayo"];
 const RIESGOS = ["Alto", "Medio", "Bajo"];
 const MOTIVOS_PERDIDA = ["Precio", "Producto", "Diseño", "Otra area", "tiempos", "Garantia", "Otros"];
 const MESES = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
