@@ -43,6 +43,7 @@ let charts = {};
 let semanaOffset = 0;
 let semRep = "", semTipo = "", semMod = "";
 let cmpA = "", cmpB = "";
+let eqMes = "";
 let mesInicializado = false;
 const filtros = { texto: "", rep: "", tipo: "", etapa: "", mes: "", tipoCliente: "" };
 
@@ -215,6 +216,15 @@ function pintarEstructura() {
       .rep-metric-val{font-size:20px;font-weight:700;color:var(--txt)}
       .rep-metric-sub{font-size:11px;color:var(--txt3);margin-top:2px}
       @media(max-width:480px){.rep-metrics{grid-template-columns:1fr 1fr}.rep-hero{padding:18px}.rep-hero-name{font-size:18px}}
+      .eq-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px}
+      .eq-card{background:var(--surface);border:.5px solid var(--border);border-radius:var(--r);padding:16px;cursor:pointer;transition:box-shadow .15s,transform .15s}
+      .eq-card:hover{box-shadow:0 4px 14px rgba(0,0,0,.10);transform:translateY(-2px)}
+      .eq-hdr{display:flex;gap:10px;align-items:center;margin-bottom:10px}
+      .eq-avatar{width:36px;height:36px;border-radius:50%;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;flex-shrink:0}
+      .eq-nombre{font-weight:700;font-size:14px}
+      .eq-big{font-size:26px;font-weight:700;line-height:1}
+      .eq-big-sub{font-size:11px;color:var(--txt3);margin-top:2px}
+      .eq-rows{margin-top:10px;font-size:12px;color:var(--txt2);display:grid;grid-template-columns:1fr 1fr;gap:5px}
       .link-box{grid-column:1/-1;background:var(--blue-l);border:1.5px solid #bfdbfe;border-radius:10px;padding:12px}
       .link-box .form-label{color:#1d4ed8}
       .link-nota{font-size:11px;color:#1d4ed8;margin-top:6px}
@@ -232,6 +242,7 @@ function pintarEstructura() {
     <div class="ag-subtabs">
       ${esAdmin() ? "" : `<button class="ag-subtab active" id="ag-st-mia">👤 Mi Agenda</button>`}
       <button class="ag-subtab ${esAdmin() ? "active" : ""}" id="ag-st-sem">🗓 Semana actual</button>
+      ${esAdmin() ? `<button class="ag-subtab" id="ag-st-eq">👥 Equipo</button>` : ""}
       <button class="ag-subtab" id="ag-st-mes">📊 Reporte mensual</button>
       <button class="ag-subtab" id="ag-st-cmp">🔁 Comparar meses</button>
     </div>
@@ -258,6 +269,16 @@ function pintarEstructura() {
         <div style="height:170px;position:relative"><canvas id="sem-ch"></canvas></div>
       </div>
       <div class="card" id="sem-lista"></div>
+    </div>
+
+    <!-- ═══ EQUIPO (solo Gerencia): tarjeta por rep ═══ -->
+    <div id="ag-sub-eq" style="display:none">
+      <div class="filtros-bar">
+        <select class="filtro-select" id="eq-mes"></select>
+        <span class="filtro-conteo" id="eq-conteo"></span>
+      </div>
+      <p class="hint">💡 Haz clic en un rep para abrir su reporte mensual detallado.</p>
+      <div class="eq-grid" id="eq-cards"></div>
     </div>
 
     <!-- ═══ MENSUAL ═══ -->
@@ -411,6 +432,10 @@ function pintarEstructura() {
 
   // Sub-pestañas
   if (!esAdmin()) $("ag-st-mia").addEventListener("click", () => mostrarSub("mia"));
+  if (esAdmin()) {
+    $("ag-st-eq").addEventListener("click", () => mostrarSub("eq"));
+    $("eq-mes").addEventListener("change", (e) => { eqMes = e.target.value; renderEquipo(); });
+  }
   $("ag-st-sem").addEventListener("click", () => mostrarSub("sem"));
   $("ag-st-mes").addEventListener("click", () => mostrarSub("mes"));
   $("ag-st-cmp").addEventListener("click", () => mostrarSub("cmp"));
@@ -459,6 +484,11 @@ function mostrarSub(nombre) {
     mia.classList.toggle("active", nombre === "mia");
     $("ag-sub-mia").style.display = nombre === "mia" ? "block" : "none";
   }
+  const eq = $("ag-st-eq");
+  if (eq) {
+    eq.classList.toggle("active", nombre === "eq");
+    $("ag-sub-eq").style.display = nombre === "eq" ? "block" : "none";
+  }
   $("ag-st-sem").classList.toggle("active", nombre === "sem");
   $("ag-st-mes").classList.toggle("active", nombre === "mes");
   $("ag-st-cmp").classList.toggle("active", nombre === "cmp");
@@ -492,6 +522,16 @@ function actualizarOpcionesFiltros() {
   };
   llenarRep("ag-f-rep", filtros.rep);
   llenarRep("sem-f-rep", semRep);
+
+  const selEq = $("eq-mes");
+  if (selEq) {
+    if (!eqMes) {
+      const hoyEq = new Date();
+      const claveHoyEq = `${hoyEq.getFullYear()}-${pad(hoyEq.getMonth() + 1)}`;
+      eqMes = meses.includes(claveHoyEq) ? claveHoyEq : (meses[0] || "");
+    }
+    selEq.innerHTML = meses.map(m => `<option value="${m}" ${m === eqMes ? "selected" : ""}>${nombreMes(m)}</option>`).join("");
+  }
 
   if (!cmpA && meses[0]) cmpA = meses[0];
   if (!cmpB && meses[1]) cmpB = meses[1];
@@ -568,6 +608,7 @@ function sugerirEstadoDesdeEtapa() {
 // ═══════════════════════════════════════════
 function render() {
   renderMiAgenda();
+  renderEquipo();
   renderSemana();
   renderMensual();
   renderComparar();
@@ -688,6 +729,56 @@ function renderMiAgenda() {
         ${porFecha[f].sort((a, b) => String(b.hora || "").localeCompare(String(a.hora || ""))).map(itemHtml).join("")}
       </div>`).join("");
   activarBotonesEditar($("mia-lista"));
+}
+
+// ═══════════════════════════════════════════
+// 👥 EQUIPO (solo Gerencia): tarjeta por rep del mes
+// ═══════════════════════════════════════════
+function renderEquipo() {
+  if (!esAdmin()) return;
+  const cont = $("eq-cards");
+  if (!cont) return;
+
+  const delMes = eqMes ? gestiones.filter(g => mesDe(g) === eqMes) : gestiones;
+  const reps = [...new Set([...REPS_BASE, ...gestiones.map(g => g.rep).filter(Boolean)])].sort();
+  $("eq-conteo").textContent = `${delMes.length} gestión(es) del equipo en ${nombreMes(eqMes) || "total"}`;
+
+  cont.innerHTML = reps.map((nombre, i) => {
+    const suyas = delMes.filter(g => g.rep === nombre);
+    const com = suyas.filter(g => g.tipo === "Comercial").length;
+    const ope = suyas.filter(g => g.tipo === "Operativo").length;
+    const cuentas = new Set(suyas.map(g => String(g.cuenta || "").trim()).filter(Boolean)).size;
+    const nuevos = suyas.filter(g => g.tipoCliente === "Nuevo").length;
+    const iniciales = nombre.split(" ").map(p => p[0]).slice(0, 2).join("").toUpperCase();
+    const color = REP_COLORS[i % REP_COLORS.length];
+    return `<div class="eq-card" data-rep="${esc(nombre)}">
+      <div class="eq-hdr">
+        <div class="eq-avatar" style="background:${color}">${iniciales}</div>
+        <div class="eq-nombre">${esc(nombre)}</div>
+      </div>
+      <div class="eq-big" style="color:${color}">${suyas.length}</div>
+      <div class="eq-big-sub">gestiones en ${nombreMes(eqMes) || "total"}</div>
+      <div class="eq-rows">
+        <span>💼 ${com} comerciales</span>
+        <span>⚙️ ${ope} operativas</span>
+        <span>🏢 ${cuentas} cuentas</span>
+        <span>✨ ${nuevos} nuevos</span>
+      </div>
+    </div>`;
+  }).join("");
+
+  cont.querySelectorAll(".eq-card").forEach(card => {
+    card.addEventListener("click", () => {
+      filtros.rep = card.dataset.rep;
+      filtros.mes = eqMes;
+      filtros.tipo = ""; filtros.etapa = ""; filtros.tipoCliente = ""; filtros.texto = "";
+      $("ag-f-rep").value = filtros.rep;
+      $("ag-f-mes").value = filtros.mes;
+      $("ag-f-tipo").value = ""; $("ag-f-etapa").value = ""; $("ag-f-texto").value = "";
+      renderMensual();
+      mostrarSub("mes");
+    });
+  });
 }
 
 // ═══════════════════════════════════════════

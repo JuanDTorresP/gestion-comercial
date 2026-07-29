@@ -160,6 +160,13 @@ function pintarEstructura() {
       .cuota-nums{font-size:11px;color:var(--txt2)}
       .cuota-bar-bg{height:8px;background:var(--s2);border-radius:99px;overflow:hidden}
       .cuota-bar-fill{height:100%;border-radius:99px;transition:width .6s ease}
+      .m-card.clic{cursor:pointer;transition:box-shadow .15s,transform .15s}
+      .m-card.clic:hover{box-shadow:0 4px 14px rgba(0,0,0,.10);transform:translateY(-2px)}
+      .funnel-row.clic{cursor:pointer;border-radius:8px}
+      .funnel-row.clic:hover .funnel-lbl{color:var(--blue);font-weight:700}
+      .cuota-row.clic{cursor:pointer}
+      .cuota-row.clic:hover{background:var(--s2)}
+      .hint{font-size:11px;color:var(--txt3);margin:-8px 0 12px}
     </style>
 
     <div class="page-hdr">
@@ -178,6 +185,7 @@ function pintarEstructura() {
     <!-- ═══ SUB-VISTA: DASHBOARD ═══ -->
     <div id="pl-sub-dash">
       <div class="m-grid" id="dash-cards"></div>
+      <p class="hint">💡 Haz clic en las tarjetas, el embudo, los motivos o las barras de cuota para ver esas oportunidades.</p>
       <div class="pl-g2" style="margin-bottom:16px">
         <div class="card" style="margin-bottom:0">
           <p class="section-lbl">Forecast vs cuota ${ANIO_CUOTA}</p>
@@ -191,6 +199,16 @@ function pintarEstructura() {
       <div class="card">
         <p class="section-lbl">Pipeline activo por mes de radicación</p>
         <div style="height:210px;position:relative"><canvas id="ch-meses"></canvas></div>
+      </div>
+      <div class="pl-g2" style="margin-bottom:16px">
+        <div class="card" style="margin-bottom:0">
+          <p class="section-lbl">Ganado vs Perdido por mes (${ANIO_CUOTA})</p>
+          <div style="height:200px;position:relative"><canvas id="ch-gvp"></canvas></div>
+        </div>
+        <div class="card" style="margin-bottom:0">
+          <p class="section-lbl">Motivos de pérdida</p>
+          <div style="height:200px;position:relative"><canvas id="ch-motivos"></canvas></div>
+        </div>
       </div>
       <div class="card" id="dash-cuotas-card">
         <p class="section-lbl">Avance de cuota por rep (Ganado ${ANIO_CUOTA})</p>
@@ -398,6 +416,20 @@ function render() {
   renderTabla();
 }
 
+// Salta a la pestaña Oportunidades con un filtro aplicado
+function irATablaFiltrada(estado, rep) {
+  filtros.estado = estado || "";
+  const selE = $("pl-f-estado");
+  if (selE) selE.value = filtros.estado;
+  if (rep !== undefined) {
+    filtros.rep = rep || "";
+    const selR = $("pl-f-rep");
+    if (selR && esAdmin()) selR.value = filtros.rep;
+  }
+  renderTabla();
+  mostrarSub("tabla");
+}
+
 // ═══════════════════════════════════════════
 // DASHBOARD (gráficas)
 // ═══════════════════════════════════════════
@@ -426,19 +458,22 @@ function renderDashboard() {
     <div class="m-card"><div class="m-lbl">Cuota ${ANIO_CUOTA}</div>
       <div class="m-val">${fmt(cuota)}</div>
       <div class="m-sub">${esAdmin() ? "equipo completo" : "mi cuota"}</div></div>
-    <div class="m-card"><div class="m-lbl">Ganado</div>
+    <div class="m-card clic" id="dc-ganado"><div class="m-lbl">Ganado</div>
       <div class="m-val" style="color:var(--green)">${fmt(vGanado)}</div>
-      <div class="m-sub">${ganados.length} oportunidades</div></div>
-    <div class="m-card"><div class="m-lbl">Pipeline activo</div>
+      <div class="m-sub">${ganados.length} oportunidades · clic para ver</div></div>
+    <div class="m-card clic" id="dc-activo"><div class="m-lbl">Pipeline activo</div>
       <div class="m-val" style="color:var(--blue)">${fmt(vActivo)}</div>
       <div class="m-sub">esperado: ${fmt(vEsp)}</div></div>
     <div class="m-card"><div class="m-lbl">Forecast</div>
       <div class="m-val" style="color:${colorF}">${fPct}%</div>
       <div class="m-sub">(ganado + esperado) / cuota</div></div>
-    <div class="m-card"><div class="m-lbl">Perdido</div>
+    <div class="m-card clic" id="dc-perdido"><div class="m-lbl">Perdido</div>
       <div class="m-val" style="color:var(--red)">${fmt(vPerdido)}</div>
-      <div class="m-sub">${perdidos.length} oportunidades</div></div>
+      <div class="m-sub">${perdidos.length} oportunidades · clic para ver</div></div>
   `;
+  $("dc-ganado").addEventListener("click", () => irATablaFiltrada("Ganado"));
+  $("dc-perdido").addEventListener("click", () => irATablaFiltrada("Perdido"));
+  $("dc-activo").addEventListener("click", () => irATablaFiltrada(""));
 
   // Dona de forecast
   mkChart("ch-forecast", {
@@ -468,12 +503,15 @@ function renderDashboard() {
     const sub = activos.filter(d => d.estado === e);
     const v = sub.reduce((s, d) => s + (parseFloat(d.valor) || 0), 0);
     const w = Math.round(v / maxV * 100);
-    return `<div class="funnel-row">
+    return `<div class="funnel-row clic" data-estado="${e}">
       <span class="funnel-lbl">${e}</span>
       <div class="funnel-track"><div class="funnel-fill" style="width:${Math.max(w, 8)}%;background:${COLORES_EMBUDO[i]}">${fmt(v)}</div></div>
       <span class="funnel-n">${sub.length} ops</span>
     </div>`;
   }).join("");
+  $("dash-funnel").querySelectorAll(".funnel-row").forEach(row => {
+    row.addEventListener("click", () => irATablaFiltrada(row.dataset.estado));
+  });
 
   // Pipeline por mes de radicación
   const mesMap = {};
@@ -504,7 +542,7 @@ function renderDashboard() {
       .reduce((s, d) => s + (parseFloat(d.valor) || 0), 0);
     const pct = cuotaRep > 0 ? Math.round(cumplido / cuotaRep * 100) : 0;
     const color = pct >= 100 ? "#16a34a" : pct >= 60 ? "#d97706" : "#2563EB";
-    return `<div class="cuota-row">
+    return `<div class="cuota-row ${esAdmin() ? "clic" : ""}" data-rep="${esc(nombre)}">
       <div class="cuota-hdr">
         <span class="cuota-nombre">${esc(nombre)}</span>
         <span class="cuota-nums">${fmt(cumplido)} / ${fmt(cuotaRep)} · <b style="color:${color}">${pct}%</b></span>
@@ -512,6 +550,62 @@ function renderDashboard() {
       <div class="cuota-bar-bg"><div class="cuota-bar-fill" style="width:${Math.min(pct, 100)}%;background:${color}"></div></div>
     </div>`;
   }).join("") || `<div class="lista-vacia">Sin cuota asignada</div>`;
+  if (esAdmin()) {
+    $("dash-cuotas").querySelectorAll(".cuota-row").forEach(row => {
+      row.addEventListener("click", () => irATablaFiltrada("", row.dataset.rep));
+    });
+  }
+
+  // ── Ganado vs Perdido por mes + Motivos de pérdida ──
+  const gvp = {};
+  delAnio.forEach(d => {
+    if (d.estado !== "Ganado" && d.estado !== "Perdido") return;
+    const m = String(d.mes_radicacion || "").toLowerCase();
+    if (!MESES.includes(m)) return;
+    gvp[m] = gvp[m] || { g: 0, p: 0 };
+    gvp[m][d.estado === "Ganado" ? "g" : "p"] += parseFloat(d.valor) || 0;
+  });
+  const gvpLabels = MESES.filter(m => gvp[m]);
+  mkChart("ch-gvp", {
+    type: "bar",
+    data: {
+      labels: gvpLabels.map(m => m.slice(0, 3).toUpperCase()),
+      datasets: [
+        { label: "Ganado", data: gvpLabels.map(m => gvp[m].g), backgroundColor: "#16a34a", borderRadius: 4 },
+        { label: "Perdido", data: gvpLabels.map(m => gvp[m].p), backgroundColor: "#dc2626", borderRadius: 4 }
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      onClick: (evt, elems) => {
+        if (!elems.length) return;
+        irATablaFiltrada(elems[0].datasetIndex === 0 ? "Ganado" : "Perdido");
+      },
+      plugins: { legend: { position: "top", labels: { boxWidth: 10, font: { size: 11 } } },
+        tooltip: { callbacks: { label: c2 => c2.dataset.label + ": " + fmtFull(c2.raw) } } },
+      scales: { x: { grid: { display: false } }, y: { ticks: { callback: v => fmt(v) } } }
+    }
+  });
+
+  const motivos = {};
+  perdidos.forEach(d => {
+    const m = String(d.motivo_perdida || "").trim() || "Sin motivo";
+    motivos[m] = (motivos[m] || 0) + 1;
+  });
+  const motLabels = Object.keys(motivos).sort((a, b) => motivos[b] - motivos[a]);
+  const MOT_COLORS = ["#dc2626", "#d97706", "#7c3aed", "#2563EB", "#0d9488", "#6b7280", "#16a34a", "#9b9b96"];
+  mkChart("ch-motivos", {
+    type: "doughnut",
+    data: {
+      labels: motLabels,
+      datasets: [{ data: motLabels.map(m => motivos[m]), backgroundColor: motLabels.map((_, i) => MOT_COLORS[i % MOT_COLORS.length]), borderWidth: 0 }]
+    },
+    options: {
+      cutout: "60%", responsive: true, maintainAspectRatio: false,
+      onClick: () => irATablaFiltrada("Perdido"),
+      plugins: { legend: { position: "right", labels: { boxWidth: 10, font: { size: 11 } } } }
+    }
+  });
 }
 
 // ═══════════════════════════════════════════
