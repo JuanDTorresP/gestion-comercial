@@ -54,7 +54,13 @@ let parar = null;
 let editandoId = null;
 let ordenCampo = "valor", ordenDir = -1;
 let charts = {};
-const filtros = { texto: "", rep: "", estado: "", tipo: "", canal: "", riesgo: "", mes: "", anio: "" };
+// Filtros de MULTISELECCIÓN: cada uno es un conjunto de valores marcados
+// (vacío = "Todos"). El texto de búsqueda sigue siendo libre.
+const filtros = {
+  texto: "",
+  rep: new Set(), estado: new Set(), tipo: new Set(), canal: new Set(),
+  riesgo: new Set(), mes: new Set(), anio: new Set()
+};
 
 // ── Utilidades ──
 const $ = (id) => document.getElementById(id);
@@ -136,6 +142,81 @@ export function detenerPipeline() {
 }
 
 // ═══════════════════════════════════════════
+// MULTISELECCIÓN DE FILTROS (como la app original)
+// ═══════════════════════════════════════════
+const MS_DEFS = [
+  { id: "ms-rep",    clave: "rep",    etiqueta: "Rep",      opciones: () => valoresUnicos("rep", REPS_BASE) },
+  { id: "ms-estado", clave: "estado", etiqueta: "Estado",   opciones: () => ESTADOS.slice() },
+  { id: "ms-tipo",   clave: "tipo",   etiqueta: "Tipo",     opciones: () => valoresUnicos("tipo") },
+  { id: "ms-canal",  clave: "canal",  etiqueta: "Canal",    opciones: () => valoresUnicos("canal") },
+  { id: "ms-riesgo", clave: "riesgo", etiqueta: "Riesgo",   opciones: () => valoresUnicos("riesgo") },
+  { id: "ms-mes",    clave: "mes",    etiqueta: "Mes rad.", opciones: () => MESES.filter(m => valoresUnicos("mes_radicacion").includes(m)) },
+  { id: "ms-anio",   clave: "anio",   etiqueta: "Año rad.", opciones: () => valoresUnicos("anio_radicacion").map(String) }
+];
+let msListo = false;
+
+function etiquetaMS(def) {
+  const set = filtros[def.clave];
+  if (!set.size) return `${def.etiqueta}: Todos`;
+  if (set.size === 1) {
+    const v = [...set][0];
+    return `${def.etiqueta}: ${v.length > 14 ? v.slice(0, 13) + "…" : v}`;
+  }
+  return `${def.etiqueta}: ${set.size} ✓`;
+}
+
+function refrescarEtiquetaMS(def) {
+  const cont = $(def.id);
+  if (!cont) return;
+  const btn = cont.querySelector(".ms-btn");
+  btn.textContent = etiquetaMS(def);
+  btn.classList.toggle("activo", filtros[def.clave].size > 0);
+}
+
+// Reconstruye las opciones de cada desplegable con los valores reales
+function actualizarMultiselects() {
+  MS_DEFS.forEach(def => {
+    const cont = $(def.id);
+    if (!cont) return;
+    const set = filtros[def.clave];
+    const ops = def.opciones();
+    const panel = cont.querySelector(".ms-panel");
+    panel.innerHTML = ops.length
+      ? ops.map((v, i) => `<label class="ms-opt"><input type="checkbox" data-i="${i}" ${set.has(v) ? "checked" : ""}/> ${esc(v)}</label>`).join("")
+      : `<div class="ms-opt" style="color:var(--txt3)">Sin valores</div>`;
+    panel.querySelectorAll("input").forEach(chk => {
+      chk.addEventListener("change", () => {
+        const v = ops[parseInt(chk.dataset.i)];
+        if (chk.checked) set.add(v); else set.delete(v);
+        refrescarEtiquetaMS(def);
+        render();
+      });
+    });
+    refrescarEtiquetaMS(def);
+  });
+}
+
+function iniciarMultiselects() {
+  MS_DEFS.forEach(def => {
+    const cont = $(def.id);
+    if (!cont) return;
+    cont.querySelector(".ms-btn").addEventListener("click", (e) => {
+      e.stopPropagation();
+      const estabaAbierto = cont.classList.contains("open");
+      document.querySelectorAll(".ms.open").forEach(x => x.classList.remove("open"));
+      if (!estabaAbierto) cont.classList.add("open");
+    });
+    cont.querySelector(".ms-panel").addEventListener("click", (e) => e.stopPropagation());
+  });
+  if (!msListo) {
+    document.addEventListener("click", () => {
+      document.querySelectorAll(".ms.open").forEach(x => x.classList.remove("open"));
+    });
+    msListo = true;
+  }
+}
+
+// ═══════════════════════════════════════════
 // ESTRUCTURA BASE
 // ═══════════════════════════════════════════
 function pintarEstructura() {
@@ -167,6 +248,15 @@ function pintarEstructura() {
       .cuota-row.clic{cursor:pointer}
       .cuota-row.clic:hover{background:var(--s2)}
       .hint{font-size:11px;color:var(--txt3);margin:-8px 0 12px}
+      .ms{position:relative}
+      .ms-btn{padding:8px 30px 8px 12px;font-size:13px;border:.5px solid var(--border);border-radius:99px;background:var(--surface) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='11' height='11' viewBox='0 0 12 12'%3E%3Cpath fill='%23888' d='M6 8L1 3h10z'/%3E%3C/svg%3E") no-repeat right 12px center;color:var(--txt);font-family:inherit;cursor:pointer;white-space:nowrap}
+      .ms-btn:hover{border-color:var(--blue)}
+      .ms-btn.activo{border-color:var(--blue);color:#1d4ed8;font-weight:600;background-color:var(--blue-l)}
+      .ms-panel{display:none;position:absolute;top:calc(100% + 6px);left:0;z-index:400;background:var(--surface);border:.5px solid var(--border);border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.15);padding:8px;min-width:200px;max-height:250px;overflow-y:auto}
+      .ms.open .ms-panel{display:block}
+      .ms-opt{display:flex;gap:8px;align-items:center;padding:6px 8px;border-radius:6px;font-size:13px;cursor:pointer;white-space:nowrap}
+      .ms-opt:hover{background:var(--s2)}
+      .ms-opt input{accent-color:var(--blue);cursor:pointer}
     </style>
 
     <div class="page-hdr">
@@ -181,6 +271,22 @@ function pintarEstructura() {
       <button class="pl-subtab active" id="pl-st-dash">📈 Dashboard</button>
       <button class="pl-subtab" id="pl-st-tabla">📋 Oportunidades</button>
     </div>
+
+    <!-- FILTROS GLOBALES: aplican al Dashboard Y a Oportunidades -->
+      <div class="filtros-bar">
+        <input class="filtro-input" id="pl-f-texto" placeholder="🔍 Buscar oportunidad, cuenta o broker..."/>
+      </div>
+      <div class="filtros-bar">
+        <div class="ms" id="ms-rep" style="${esAdmin() ? "" : "display:none"}"><button type="button" class="ms-btn">Rep: Todos</button><div class="ms-panel"></div></div>
+        <div class="ms" id="ms-estado"><button type="button" class="ms-btn">Estado: Todos</button><div class="ms-panel"></div></div>
+        <div class="ms" id="ms-tipo"><button type="button" class="ms-btn">Tipo: Todos</button><div class="ms-panel"></div></div>
+        <div class="ms" id="ms-canal"><button type="button" class="ms-btn">Canal: Todos</button><div class="ms-panel"></div></div>
+        <div class="ms" id="ms-riesgo"><button type="button" class="ms-btn">Riesgo: Todos</button><div class="ms-panel"></div></div>
+        <div class="ms" id="ms-mes"><button type="button" class="ms-btn">Mes rad.: Todos</button><div class="ms-panel"></div></div>
+        <div class="ms" id="ms-anio"><button type="button" class="ms-btn">Año rad.: Todos</button><div class="ms-panel"></div></div>
+        <button class="btn-secundario" id="pl-f-limpiar" style="padding:7px 12px;font-size:12px">✕ Limpiar</button>
+        <span class="filtro-conteo" id="pl-conteo"></span>
+      </div>
 
     <!-- ═══ SUB-VISTA: DASHBOARD ═══ -->
     <div id="pl-sub-dash">
@@ -219,21 +325,6 @@ function pintarEstructura() {
     <!-- ═══ SUB-VISTA: OPORTUNIDADES (tabla) ═══ -->
     <div id="pl-sub-tabla" style="display:none">
       <div class="m-grid" id="pl-metricas"></div>
-
-      <div class="filtros-bar">
-        <input class="filtro-input" id="pl-f-texto" placeholder="🔍 Buscar oportunidad, cuenta o broker..."/>
-      </div>
-      <div class="filtros-bar">
-        <select class="filtro-select" id="pl-f-rep" style="${esAdmin() ? "" : "display:none"}"><option value="">Rep: Todos</option></select>
-        <select class="filtro-select" id="pl-f-estado"><option value="">Estado: Todos</option></select>
-        <select class="filtro-select" id="pl-f-tipo"><option value="">Tipo: Todos</option></select>
-        <select class="filtro-select" id="pl-f-canal"><option value="">Canal: Todos</option></select>
-        <select class="filtro-select" id="pl-f-riesgo"><option value="">Riesgo: Todos</option></select>
-        <select class="filtro-select" id="pl-f-mes"><option value="">Mes rad.: Todos</option></select>
-        <select class="filtro-select" id="pl-f-anio"><option value="">Año rad.: Todos</option></select>
-        <button class="btn-secundario" id="pl-f-limpiar" style="padding:7px 12px;font-size:12px">✕ Limpiar</button>
-        <span class="filtro-conteo" id="pl-conteo"></span>
-      </div>
 
       <div class="card" style="padding:0 16px 8px">
         <div class="tbl-wrap">
@@ -355,17 +446,14 @@ function pintarEstructura() {
   $("pl-btn-eliminar").addEventListener("click", eliminar);
 
   // Eventos de filtros
-  $("pl-f-texto").addEventListener("input", (e) => { filtros.texto = e.target.value.toLowerCase(); renderTabla(); });
-  [["pl-f-rep","rep"],["pl-f-estado","estado"],["pl-f-tipo","tipo"],["pl-f-canal","canal"],
-   ["pl-f-riesgo","riesgo"],["pl-f-mes","mes"],["pl-f-anio","anio"]].forEach(([id, clave]) => {
-    $(id).addEventListener("change", (e) => { filtros[clave] = e.target.value; renderTabla(); });
-  });
+  $("pl-f-texto").addEventListener("input", (e) => { filtros.texto = e.target.value.toLowerCase(); render(); });
+  iniciarMultiselects();
   $("pl-f-limpiar").addEventListener("click", () => {
-    Object.keys(filtros).forEach(k => filtros[k] = "");
+    filtros.texto = "";
     $("pl-f-texto").value = "";
-    ["pl-f-rep","pl-f-estado","pl-f-tipo","pl-f-canal","pl-f-riesgo","pl-f-mes","pl-f-anio"]
-      .forEach(id => $(id).value = "");
-    renderTabla();
+    MS_DEFS.forEach(def => filtros[def.clave].clear());
+    actualizarMultiselects();
+    render();
   });
 
   // Ordenamiento por encabezado
@@ -388,20 +476,7 @@ function mostrarSub(nombre) {
 }
 
 function actualizarOpcionesFiltros() {
-  const llenar = (id, lista, etiqueta) => {
-    const sel = $(id);
-    if (!sel) return;
-    const actual = sel.value;
-    sel.innerHTML = `<option value="">${etiqueta}: Todos</option>` +
-      lista.map(v => `<option ${v === actual ? "selected" : ""}>${esc(v)}</option>`).join("");
-  };
-  llenar("pl-f-rep", valoresUnicos("rep", REPS_BASE), "Rep");
-  llenar("pl-f-estado", ESTADOS, "Estado");
-  llenar("pl-f-tipo", valoresUnicos("tipo"), "Tipo");
-  llenar("pl-f-canal", valoresUnicos("canal"), "Canal");
-  llenar("pl-f-riesgo", valoresUnicos("riesgo"), "Riesgo");
-  llenar("pl-f-mes", MESES.filter(m => valoresUnicos("mes_radicacion").includes(m)), "Mes rad.");
-  llenar("pl-f-anio", valoresUnicos("anio_radicacion").map(String), "Año rad.");
+  actualizarMultiselects();
 
   const dl = (id, campo) => { const el = $(id); if (el) el.innerHTML = valoresUnicos(campo).map(v => `<option value="${esc(v)}">`).join(""); };
   dl("pl-dl-tipo", "tipo"); dl("pl-dl-canal", "canal"); dl("pl-dl-origen", "origen");
@@ -418,15 +493,10 @@ function render() {
 
 // Salta a la pestaña Oportunidades con un filtro aplicado
 function irATablaFiltrada(estado, rep) {
-  filtros.estado = estado || "";
-  const selE = $("pl-f-estado");
-  if (selE) selE.value = filtros.estado;
-  if (rep !== undefined) {
-    filtros.rep = rep || "";
-    const selR = $("pl-f-rep");
-    if (selR && esAdmin()) selR.value = filtros.rep;
-  }
-  renderTabla();
+  filtros.estado = new Set(estado ? [estado] : []);
+  if (rep !== undefined) filtros.rep = new Set(rep ? [rep] : []);
+  actualizarMultiselects();
+  render();
   mostrarSub("tabla");
 }
 
@@ -435,8 +505,8 @@ function irATablaFiltrada(estado, rep) {
 // ═══════════════════════════════════════════
 function renderDashboard() {
   const u = obtenerUsuario();
-  // Gerencia ve todo; un vendedor solo lo suyo
-  const propios = esAdmin() ? deals : deals.filter(d => d.rep === u.nombreRep);
+  // Universo del dashboard: rol + filtros globales aplicados
+  const propios = filtrarDeals();
   const delAnio = propios.filter(esDelAnio);
 
   const activos = delAnio.filter(d => ESTADOS_ACTIVOS.has(d.estado));
@@ -454,9 +524,12 @@ function renderDashboard() {
   const vGanadoAll = ganadosAll.reduce((s, d) => s + (parseFloat(d.valor) || 0), 0);
   const vPerdidoAll = perdidosAll.reduce((s, d) => s + (parseFloat(d.valor) || 0), 0);
 
-  const cuota = esAdmin()
-    ? Object.values(CUOTAS).reduce((s, c) => s + c, 0)
-    : (CUOTAS[u.nombreRep] || 0);
+  const repsFiltrados = [...filtros.rep];
+  const cuota = !esAdmin()
+    ? (CUOTAS[u.nombreRep] || 0)
+    : (repsFiltrados.length
+        ? repsFiltrados.reduce((s, n) => s + (CUOTAS[n] || 0), 0)
+        : Object.values(CUOTAS).reduce((s, c) => s + c, 0));
   const fPct = cuota > 0 ? Math.round((vGanado + vEsp) / cuota * 100) : 0;
   const colorF = fPct >= 100 ? "#16a34a" : fPct >= 80 ? "#d97706" : "#dc2626";
 
@@ -464,7 +537,7 @@ function renderDashboard() {
   $("dash-cards").innerHTML = `
     <div class="m-card"><div class="m-lbl">Cuota ${ANIO_CUOTA}</div>
       <div class="m-val">${fmt(cuota)}</div>
-      <div class="m-sub">${esAdmin() ? "equipo completo" : "mi cuota"}</div></div>
+      <div class="m-sub">${!esAdmin() ? "mi cuota" : (repsFiltrados.length === 1 ? "cuota de " + esc(repsFiltrados[0]) : repsFiltrados.length > 1 ? "cuota de " + repsFiltrados.length + " reps" : "equipo completo")}</div></div>
     <div class="m-card clic" id="dc-ganado"><div class="m-lbl">Ganado (total)</div>
       <div class="m-val" style="color:var(--green)">${fmt(vGanadoAll)}</div>
       <div class="m-sub">${ganadosAll.length} ops · ${fmt(vGanado)} de ${ANIO_CUOTA} · clic para ver</div></div>
@@ -541,10 +614,13 @@ function renderDashboard() {
   });
 
   // Avance de cuota por rep (Gerencia ve a todos; un vendedor su barra)
-  const nombres = esAdmin() ? Object.keys(CUOTAS) : (CUOTAS[u.nombreRep] ? [u.nombreRep] : []);
+  let nombres;
+  if (!esAdmin()) nombres = CUOTAS[u.nombreRep] ? [u.nombreRep] : [];
+  else if (repsFiltrados.length) nombres = repsFiltrados.filter(n => CUOTAS[n] !== undefined);
+  else nombres = Object.keys(CUOTAS);
   $("dash-cuotas").innerHTML = nombres.map(nombre => {
     const cuotaRep = CUOTAS[nombre];
-    const cumplido = deals
+    const cumplido = propios
       .filter(d => d.rep === nombre && d.estado === "Ganado" && esDelAnio(d))
       .reduce((s, d) => s + (parseFloat(d.valor) || 0), 0);
     const pct = cuotaRep > 0 ? Math.round(cumplido / cuotaRep * 100) : 0;
@@ -618,21 +694,27 @@ function renderDashboard() {
 // ═══════════════════════════════════════════
 // TABLA (sub-vista Oportunidades)
 // ═══════════════════════════════════════════
-function renderTabla() {
-  const visibles = baseDeals().filter(d => {
-    if (filtros.rep && d.rep !== filtros.rep) return false;
-    if (filtros.estado && d.estado !== filtros.estado) return false;
-    if (filtros.tipo && String(d.tipo || "").trim() !== filtros.tipo) return false;
-    if (filtros.canal && String(d.canal || "").trim() !== filtros.canal) return false;
-    if (filtros.riesgo && String(d.riesgo || "").trim() !== filtros.riesgo) return false;
-    if (filtros.mes && d.mes_radicacion !== filtros.mes) return false;
-    if (filtros.anio && String(d.anio_radicacion || "") !== filtros.anio) return false;
+// Universo filtrado: base según rol + todos los filtros globales.
+// Lo usan TANTO el Dashboard como la tabla de Oportunidades.
+function filtrarDeals() {
+  return baseDeals().filter(d => {
+    if (filtros.rep.size && !filtros.rep.has(d.rep)) return false;
+    if (filtros.estado.size && !filtros.estado.has(d.estado)) return false;
+    if (filtros.tipo.size && !filtros.tipo.has(String(d.tipo || "").trim())) return false;
+    if (filtros.canal.size && !filtros.canal.has(String(d.canal || "").trim())) return false;
+    if (filtros.riesgo.size && !filtros.riesgo.has(String(d.riesgo || "").trim())) return false;
+    if (filtros.mes.size && !filtros.mes.has(d.mes_radicacion)) return false;
+    if (filtros.anio.size && !filtros.anio.has(String(d.anio_radicacion || ""))) return false;
     if (filtros.texto) {
       const blob = ((d.oportunidad || "") + " " + (d.cuenta || "") + " " + (d.broker || "")).toLowerCase();
       if (!blob.includes(filtros.texto)) return false;
     }
     return true;
   });
+}
+
+function renderTabla() {
+  const visibles = filtrarDeals();
 
   const activos = visibles.filter(d => ESTADOS_ACTIVOS.has(d.estado));
   const ganados = visibles.filter(d => d.estado === "Ganado");
