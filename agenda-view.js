@@ -1,18 +1,22 @@
 // ═══════════════════════════════════════════════════════════
-// agenda-view.js — v2
-// Agenda Comercial con tres sub-pestañas:
-//   🗓 Semana actual   → gestiones de la semana, navegable ◀ ▶
-//   📊 Reporte mensual → métricas, gráficas y lista con filtros
-//   🔁 Comparar meses  → dos meses lado a lado con deltas
-//
-// Interactividad: las tarjetas de métricas y las gráficas se
-// pueden CLICAR para filtrar la lista (como en la app vieja).
+// agenda-view.js — v3
+// Novedades sobre la v2:
+//  · 🗓 Semana: gráfica de gestiones por día + tarjetas clicables
+//  · 🔗 TRAZABILIDAD CON EL PIPELINE: una gestión comercial se
+//    puede vincular a una oportunidad. Al guardarla:
+//      - actualiza el ESTADO de la oportunidad
+//      - actualiza el VALOR de la oportunidad
+//      - la CUENTA de la oportunidad se mantiene intacta
+//    o crea una oportunidad nueva en el pipeline si no existe.
 // ═══════════════════════════════════════════════════════════
 
 import { obtenerUsuario, esAdmin } from "./auth-service.js";
-import { suscribirGestiones, crearGestion, actualizarGestion, eliminarGestion } from "./firestore-service.js";
+import {
+  suscribirGestiones, crearGestion, actualizarGestion, eliminarGestion,
+  suscribirDeals, crearDeal, actualizarDeal
+} from "./firestore-service.js";
 
-// ── Constantes de negocio (mismas de la Agenda vieja) ──
+// ── Constantes de negocio ──
 const REPS_BASE = ["Patricia Lopera", "Clemencia Rodriguez", "Ivan Muñoz"];
 const ETAPAS = ["Identificado", "Seguimiento", "Cotización", "Diseño", "Negociación"];
 const ETAPA_COLORS = { "Identificado": "#2563EB", "Seguimiento": "#7c3aed", "Cotización": "#d97706", "Diseño": "#dc2626", "Negociación": "#16a34a" };
@@ -20,14 +24,25 @@ const REP_COLORS = ["#2563EB", "#16a34a", "#7c3aed", "#d97706", "#dc2626", "#0d9
 const MESES_NOMBRE = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
 const DIAS_NOMBRE = ["lunes","martes","miércoles","jueves","viernes","sábado","domingo"];
 
+// Estados del PIPELINE y traducción etapa de agenda → estado sugerido
+const ESTADOS_PIPE = ["Identificado", "Cotizado", "En diseño", "Negociación", "On hold", "Ganado", "Perdido"];
+const MAPA_ETAPA_ESTADO = {
+  "Identificado": "Identificado",
+  "Seguimiento": "",            // seguimiento no cambia el estado por sí solo
+  "Cotización": "Cotizado",
+  "Diseño": "En diseño",
+  "Negociación": "Negociación"
+};
+
 // ── Estado interno ──
 let gestiones = [];
-let parar = null;
+let deals = [];
+let parar = null, pararDeals = null;
 let editandoId = null;
 let charts = {};
-let semanaOffset = 0;              // 0 = semana actual, -1 = anterior...
-let semRep = "";                   // filtro de rep en la vista semanal
-let cmpA = "", cmpB = "";          // meses a comparar
+let semanaOffset = 0;
+let semRep = "", semTipo = "", semMod = "";
+let cmpA = "", cmpB = "";
 let mesInicializado = false;
 const filtros = { texto: "", rep: "", tipo: "", etapa: "", mes: "", tipoCliente: "" };
 
@@ -52,6 +67,13 @@ function fechaLegible(f) {
   if (isNaN(d)) return f;
   return d.toLocaleDateString("es-CO", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
 }
+function fmt(n) {
+  n = parseFloat(n) || 0;
+  if (n >= 1e9) return "$" + (n / 1e9).toFixed(1) + "B";
+  if (n >= 1e6) return "$" + Math.round(n / 1e6) + "M";
+  if (n >= 1e3) return "$" + Math.round(n / 1e3) + "K";
+  return "$" + Math.round(n);
+}
 function puedeEditar(g) {
   if (esAdmin()) return true;
   const u = obtenerUsuario();
@@ -66,16 +88,14 @@ function mkChart(id, cfg) {
   if (!el || typeof Chart === "undefined") return;
   charts[id] = new Chart(el, cfg);
 }
-// Lunes de la semana con desplazamiento (0 = esta semana)
 function lunesDe(offset) {
   const hoy = new Date();
-  const dia = (hoy.getDay() + 6) % 7; // 0 = lunes
+  const dia = (hoy.getDay() + 6) % 7;
   const lunes = new Date(hoy);
   lunes.setDate(hoy.getDate() - dia + offset * 7);
   lunes.setHours(0, 0, 0, 0);
   return lunes;
 }
-// HTML de una gestión en la lista (compartido por semana y mensual)
 function itemHtml(g) {
   return `
     <div class="ag-item">
@@ -90,6 +110,7 @@ function itemHtml(g) {
           ${chip(g.canal, "#DCFCE7", "#15803d")}
           ${chip(g.modalidad, "#FEF3C7", "#b45309")}
           ${chip(g.tipoCliente === "Nuevo" ? "✨ Nuevo" : "", "#CCFBF1", "#0f766e")}
+          ${chip(g.dealId ? "🔗 Pipeline" : "", "#EFF6FF", "#1d4ed8")}
           <span class="ag-ciudad">📍 ${esc(g.ciudad) || "—"}</span>
         </div>
         ${g.notas ? `<div class="ag-notas">${esc(g.notas)}</div>` : ""}
@@ -107,10 +128,10 @@ function activarBotonesEditar(contenedor) {
 }
 
 // ═══════════════════════════════════════════
-// ARRANQUE / PARADA (las llama app.js)
+// ARRANQUE / PARADA
 // ═══════════════════════════════════════════
 export function iniciarAgenda() {
-  semanaOffset = 0; semRep = ""; cmpA = ""; cmpB = ""; mesInicializado = false;
+  semanaOffset = 0; semRep = ""; semTipo = ""; semMod = ""; cmpA = ""; cmpB = ""; mesInicializado = false;
   Object.keys(filtros).forEach(k => filtros[k] = "");
   pintarEstructura();
   if (parar) parar();
@@ -121,12 +142,20 @@ export function iniciarAgenda() {
         `<div class="estado-conexion error">✕ No se pudo conectar a la Agenda. Revisa tu conexión o tus permisos.</div>`;
     }
   );
+  // También escuchamos las oportunidades del pipeline (para la trazabilidad)
+  if (pararDeals) pararDeals();
+  pararDeals = suscribirDeals(
+    (lista) => { deals = lista; poblarSelectDeals(); },
+    () => {}
+  );
 }
 
 export function detenerAgenda() {
   if (parar) { parar(); parar = null; }
+  if (pararDeals) { pararDeals(); pararDeals = null; }
   Object.keys(charts).forEach(k => { charts[k].destroy(); delete charts[k]; });
   gestiones = [];
+  deals = [];
 }
 
 // ═══════════════════════════════════════════
@@ -167,6 +196,9 @@ function pintarEstructura() {
       .cmp-tbl td:first-child,.cmp-tbl th:first-child{text-align:left;color:var(--txt2)}
       .cmp-delta{font-size:11px;font-weight:700;border-radius:99px;padding:1px 8px}
       .hint{font-size:11px;color:var(--txt3);margin:-8px 0 12px}
+      .link-box{grid-column:1/-1;background:var(--blue-l);border:1.5px solid #bfdbfe;border-radius:10px;padding:12px}
+      .link-box .form-label{color:#1d4ed8}
+      .link-nota{font-size:11px;color:#1d4ed8;margin-top:6px}
       @media(max-width:820px){.cmp-heads{grid-template-columns:1fr}}
     </style>
 
@@ -197,6 +229,11 @@ function pintarEstructura() {
         <span class="filtro-conteo" id="sem-conteo"></span>
       </div>
       <div class="m-grid" id="sem-metricas"></div>
+      <p class="hint">💡 Haz clic en las tarjetas para filtrar; clic en las barras de un día para verlo.</p>
+      <div class="card">
+        <p class="section-lbl">Gestiones por día de la semana</p>
+        <div style="height:170px;position:relative"><canvas id="sem-ch"></canvas></div>
+      </div>
       <div class="card" id="sem-lista"></div>
     </div>
 
@@ -306,6 +343,26 @@ function pintarEstructura() {
                 <option value="Diseño">✏️ Diseño</option>
                 <option value="Negociación">🤝 Negociación</option>
               </select></div>
+
+            <!-- 🔗 TRAZABILIDAD CON EL PIPELINE -->
+            <div class="link-box" id="ag-link-wrap" style="display:none">
+              <label class="form-label">🔗 Trazabilidad con el pipeline</label>
+              <select class="form-select" id="ag-c-deal" style="width:100%">
+                <option value="">— No vincular al pipeline —</option>
+              </select>
+              <div id="ag-link-campos" style="display:none;margin-top:10px">
+                <div class="form-grid">
+                  <div class="form-group"><label class="form-label">Estado de la oportunidad</label>
+                    <select class="form-select" id="ag-c-deal-estado">
+                      ${ESTADOS_PIPE.map(e => `<option>${e}</option>`).join("")}
+                    </select></div>
+                  <div class="form-group"><label class="form-label">Valor (COP)</label>
+                    <input class="form-input" id="ag-c-deal-valor" type="number" min="0" placeholder="0"/></div>
+                </div>
+                <div class="link-nota" id="ag-link-nota"></div>
+              </div>
+            </div>
+
             <div class="form-group full"><label class="form-label">Descripción / Notas</label>
               <textarea class="form-input" id="ag-c-notas" rows="3" maxlength="500" placeholder="¿Qué pasó en la visita?"></textarea></div>
           </div>
@@ -320,7 +377,6 @@ function pintarEstructura() {
     </div>
   `;
 
-  // Rep del formulario: un vendedor solo puede elegirse a sí mismo
   const selRep = $("ag-c-rep");
   if (esAdmin()) {
     selRep.innerHTML = `<option value="">Seleccionar...</option>` +
@@ -350,8 +406,11 @@ function pintarEstructura() {
   $("ag-c-tipo").addEventListener("change", () => {
     const esComercial = $("ag-c-tipo").value === "Comercial";
     $("ag-etapa-wrap").style.display = esComercial ? "flex" : "none";
-    if (!esComercial) $("ag-c-etapa").value = "";
+    $("ag-link-wrap").style.display = esComercial ? "block" : "none";
+    if (!esComercial) { $("ag-c-etapa").value = ""; $("ag-c-deal").value = ""; alCambiarDeal(); }
   });
+  $("ag-c-etapa").addEventListener("change", sugerirEstadoDesdeEtapa);
+  $("ag-c-deal").addEventListener("change", alCambiarDeal);
 
   // Filtros del mensual
   $("ag-f-texto").addEventListener("input", (e) => { filtros.texto = e.target.value.toLowerCase(); renderMensual(); });
@@ -386,7 +445,6 @@ function mesesEnDatos() {
 function actualizarOpcionesFiltros() {
   const meses = mesesEnDatos();
 
-  // Mensual: mes por defecto = el mes actual (si tiene datos)
   const selMes = $("ag-f-mes");
   if (!mesInicializado) {
     const hoy = new Date();
@@ -406,7 +464,6 @@ function actualizarOpcionesFiltros() {
   llenarRep("ag-f-rep", filtros.rep);
   llenarRep("sem-f-rep", semRep);
 
-  // Comparar: por defecto los dos meses más recientes
   if (!cmpA && meses[0]) cmpA = meses[0];
   if (!cmpB && meses[1]) cmpB = meses[1];
   const llenarCmp = (id, valor) => {
@@ -415,7 +472,6 @@ function actualizarOpcionesFiltros() {
   llenarCmp("cmp-a", cmpA);
   llenarCmp("cmp-b", cmpB);
 
-  // Sugerencias del formulario
   const dl = (id, campo) => {
     const vals = [...new Set(gestiones.map(g => String(g[campo] || "").trim()).filter(Boolean))].sort();
     const el = $(id);
@@ -423,6 +479,59 @@ function actualizarOpcionesFiltros() {
   };
   dl("ag-dl-ciudad", "ciudad");
   dl("ag-dl-cuenta", "cuenta");
+}
+
+// ═══════════════════════════════════════════
+// 🔗 TRAZABILIDAD: selector de oportunidades
+// ═══════════════════════════════════════════
+function dealsElegibles() {
+  // Gerencia puede vincular cualquier oportunidad;
+  // un vendedor solo las suyas (las reglas lo exigen igual).
+  const u = obtenerUsuario();
+  const lista = esAdmin() ? deals : deals.filter(d => d.rep === u?.nombreRep);
+  return [...lista].sort((a, b) => String(a.cuenta || "").localeCompare(String(b.cuenta || ""), "es"));
+}
+
+function poblarSelectDeals() {
+  const sel = $("ag-c-deal");
+  if (!sel) return;
+  const actual = sel.value;
+  sel.innerHTML = `<option value="">— No vincular al pipeline —</option>` +
+    `<option value="__nueva__">➕ Crear NUEVA oportunidad en el pipeline</option>` +
+    dealsElegibles().map(d =>
+      `<option value="${d.id}">${esc(d.cuenta)} — ${esc(d.oportunidad)} (${esc(d.estado)} · ${fmt(d.valor)})</option>`
+    ).join("");
+  if ([...sel.options].some(o => o.value === actual)) sel.value = actual;
+}
+
+function alCambiarDeal() {
+  const val = $("ag-c-deal").value;
+  const campos = $("ag-link-campos");
+  const nota = $("ag-link-nota");
+
+  if (!val) { campos.style.display = "none"; return; }
+  campos.style.display = "block";
+
+  if (val === "__nueva__") {
+    $("ag-c-deal-valor").value = "";
+    sugerirEstadoDesdeEtapa();
+    nota.textContent = "Se creará en el pipeline usando la Cuenta y la Oportunidad de esta gestión.";
+  } else {
+    const d = deals.find(x => x.id === val);
+    if (d) {
+      $("ag-c-deal-valor").value = d.valor ?? "";
+      const sugerido = MAPA_ETAPA_ESTADO[$("ag-c-etapa").value] || d.estado || "Identificado";
+      $("ag-c-deal-estado").value = sugerido;
+      nota.textContent = `La cuenta "${d.cuenta}" se mantiene. Se actualizarán el estado y el valor de la oportunidad.`;
+    }
+  }
+}
+
+function sugerirEstadoDesdeEtapa() {
+  const val = $("ag-c-deal").value;
+  if (!val) return;
+  const sugerido = MAPA_ETAPA_ESTADO[$("ag-c-etapa").value];
+  if (sugerido) $("ag-c-deal-estado").value = sugerido;
 }
 
 // ═══════════════════════════════════════════
@@ -435,7 +544,7 @@ function render() {
 }
 
 // ═══════════════════════════════════════════
-// 🗓 SEMANA
+// 🗓 SEMANA (con gráfica y tarjetas clicables)
 // ═══════════════════════════════════════════
 function renderSemana() {
   const lunes = lunesDe(semanaOffset);
@@ -446,33 +555,77 @@ function renderSemana() {
     `${lunes.getDate()} ${MESES_NOMBRE[lunes.getMonth()].slice(0,3)} — ${domingo.getDate()} ${MESES_NOMBRE[domingo.getMonth()].slice(0,3)} ${domingo.getFullYear()}` +
     (semanaOffset === 0 ? " (actual)" : "");
 
-  const visibles = gestiones.filter(g => {
+  const enSemana = gestiones.filter(g => {
     const f = g.fecha || "";
-    if (f < desde || f > hasta) return false;
-    if (semRep && g.rep !== semRep) return false;
-    return true;
+    return f >= desde && f <= hasta && (!semRep || g.rep === semRep);
   });
+  const visibles = enSemana.filter(g =>
+    (!semTipo || g.tipo === semTipo) && (!semMod || g.modalidad === semMod));
 
-  const comerciales = visibles.filter(g => g.tipo === "Comercial");
+  const comerciales = enSemana.filter(g => g.tipo === "Comercial");
   const cuentas = new Set(visibles.map(g => String(g.cuenta || "").trim()).filter(Boolean));
-  const presenciales = visibles.filter(g => g.modalidad === "Presencial").length;
+  const presenciales = enSemana.filter(g => g.modalidad === "Presencial");
+
   $("sem-metricas").innerHTML = `
-    <div class="m-card"><div class="m-lbl">Gestiones de la semana</div>
-      <div class="m-val" style="color:var(--blue)">${visibles.length}</div>
+    <div class="m-card clic ${!semTipo && !semMod ? "activa" : ""}" id="sm-todas">
+      <div class="m-lbl">Gestiones de la semana</div>
+      <div class="m-val" style="color:var(--blue)">${enSemana.length}</div>
       <div class="m-sub">${semRep ? esc(semRep) : "todo el equipo"}</div></div>
-    <div class="m-card"><div class="m-lbl">Comerciales</div>
+    <div class="m-card clic ${semTipo === "Comercial" ? "activa" : ""}" id="sm-com">
+      <div class="m-lbl">Comerciales</div>
       <div class="m-val" style="color:var(--green)">${comerciales.length}</div>
-      <div class="m-sub">vs ${visibles.length - comerciales.length} operativas</div></div>
+      <div class="m-sub">clic para filtrar</div></div>
     <div class="m-card"><div class="m-lbl">Cuentas</div>
       <div class="m-val">${cuentas.size}</div>
       <div class="m-sub">cuentas únicas</div></div>
-    <div class="m-card"><div class="m-lbl">Presenciales</div>
-      <div class="m-val" style="color:var(--amber)">${presenciales}</div>
-      <div class="m-sub">visitas en persona</div></div>
+    <div class="m-card clic ${semMod === "Presencial" ? "activa" : ""}" id="sm-pre">
+      <div class="m-lbl">Presenciales</div>
+      <div class="m-val" style="color:var(--amber)">${presenciales.length}</div>
+      <div class="m-sub">clic para filtrar</div></div>
   `;
+  $("sm-todas").addEventListener("click", () => { semTipo = ""; semMod = ""; renderSemana(); });
+  $("sm-com").addEventListener("click", () => { semTipo = semTipo === "Comercial" ? "" : "Comercial"; renderSemana(); });
+  $("sm-pre").addEventListener("click", () => { semMod = semMod === "Presencial" ? "" : "Presencial"; renderSemana(); });
+
   $("sem-conteo").textContent = `${visibles.length} gestión(es)`;
 
-  // Los 7 días de la semana, en orden, incluyendo días sin gestiones
+  // Gráfica: gestiones por día (comerciales vs operativas apiladas)
+  const datosCom = [], datosOpe = [], etiquetas = [];
+  for (let i = 0; i < 7; i++) {
+    const dia = new Date(lunes); dia.setDate(lunes.getDate() + i);
+    const clave = claveFecha(dia);
+    const delDia = visibles.filter(g => g.fecha === clave);
+    datosCom.push(delDia.filter(g => g.tipo === "Comercial").length);
+    datosOpe.push(delDia.filter(g => g.tipo !== "Comercial").length);
+    etiquetas.push(`${DIAS_NOMBRE[i].slice(0,3)} ${dia.getDate()}`);
+  }
+  mkChart("sem-ch", {
+    type: "bar",
+    data: {
+      labels: etiquetas,
+      datasets: [
+        { label: "Comerciales", data: datosCom, backgroundColor: "#2563EB", borderRadius: 4 },
+        { label: "Operativas", data: datosOpe, backgroundColor: "#9b9b96", borderRadius: 4 }
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      onClick: (evt, elems) => {
+        if (!elems.length) return;
+        const idx = elems[0].index;
+        const dia = new Date(lunes); dia.setDate(lunes.getDate() + idx);
+        const ancla = document.getElementById("sem-dia-" + claveFecha(dia));
+        if (ancla) ancla.scrollIntoView({ behavior: "smooth", block: "start" });
+      },
+      plugins: { legend: { position: "top", labels: { boxWidth: 10, font: { size: 11 } } } },
+      scales: {
+        x: { stacked: true, grid: { display: false } },
+        y: { stacked: true, ticks: { precision: 0 } }
+      }
+    }
+  });
+
+  // Los 7 días de la semana, incluyendo días sin gestiones
   let html = "";
   for (let i = 0; i < 7; i++) {
     const dia = new Date(lunes); dia.setDate(lunes.getDate() + i);
@@ -481,7 +634,7 @@ function renderSemana() {
       .filter(g => g.fecha === clave)
       .sort((a, b) => String(a.hora || "").localeCompare(String(b.hora || "")));
     const esHoy = clave === claveFecha(new Date());
-    html += `<div class="ag-dia">
+    html += `<div class="ag-dia" id="sem-dia-${clave}">
       <div class="ag-dia-hdr">
         <span>${DIAS_NOMBRE[i]} ${dia.getDate()} ${esHoy ? " · <b style='color:var(--blue)'>HOY</b>" : ""}</span>
         <span>${items.length || ""}</span>
@@ -520,9 +673,8 @@ function renderMensual() {
   const cuentas = new Set(visibles.map(g => String(g.cuenta || "").trim()).filter(Boolean));
   const clientesNuevos = visibles.filter(g => g.tipoCliente === "Nuevo").length;
 
-  // Tarjetas CLICABLES: aplican/quitan el filtro correspondiente
   $("ag-metricas").innerHTML = `
-    <div class="m-card clic ${!filtros.tipo && !filtros.tipoCliente ? "" : ""}" id="mc-todas">
+    <div class="m-card clic" id="mc-todas">
       <div class="m-lbl">Gestiones</div>
       <div class="m-val" style="color:var(--blue)">${visibles.length}</div>
       <div class="m-sub">${filtros.mes ? nombreMes(filtros.mes) : "todo el histórico"}</div></div>
@@ -562,7 +714,6 @@ function renderMensual() {
     renderMensual();
   });
 
-  // Gráfica por rep — CLIC en una barra filtra por ese rep
   const porRep = {};
   visibles.forEach(g => { const r = g.rep || "Sin rep"; porRep[r] = (porRep[r] || 0) + 1; });
   const repLabels = Object.keys(porRep).sort((a, b) => porRep[b] - porRep[a]);
@@ -586,7 +737,6 @@ function renderMensual() {
     }
   });
 
-  // Dona por etapa — CLIC en un segmento filtra por esa etapa
   const porEtapa = {};
   comerciales.forEach(g => { const e = etapaDe(g); if (e) porEtapa[e] = (porEtapa[e] || 0) + 1; });
   const etapaLabels = ETAPAS.filter(e => porEtapa[e]);
@@ -612,7 +762,6 @@ function renderMensual() {
   $("ag-conteo").textContent = `${visibles.length} gestión(es)` +
     (filtros.tipoCliente === "Nuevo" ? " · solo clientes nuevos" : "");
 
-  // Lista agrupada por fecha
   if (visibles.length === 0) {
     $("ag-lista").innerHTML = `<div class="lista-vacia">Sin gestiones con los filtros actuales</div>`;
     return;
@@ -648,7 +797,6 @@ function statsMes(clave) {
 }
 
 function deltaHtml(a, b) {
-  // delta de B respecto a A (B es el mes más viejo si vienen ordenados desc)
   if (b === 0 && a === 0) return `<span class="cmp-delta" style="background:#F3F4F6;color:#6b7280">=</span>`;
   const dif = a - b;
   const pct = b > 0 ? Math.round(dif / b * 100) : 100;
@@ -676,7 +824,6 @@ function renderComparar() {
     ${fila("Presenciales", A.presenciales, B.presenciales)}
   `;
 
-  // Barras agrupadas por rep
   const reps = [...new Set([...Object.keys(A.porRep), ...Object.keys(B.porRep)])].sort();
   mkChart("cmp-ch", {
     type: "bar",
@@ -696,7 +843,7 @@ function renderComparar() {
 }
 
 // ═══════════════════════════════════════════
-// MODAL
+// MODAL (con trazabilidad al pipeline)
 // ═══════════════════════════════════════════
 function abrirModal(g) {
   editandoId = g ? g.id : null;
@@ -718,6 +865,13 @@ function abrirModal(g) {
   $("ag-c-etapa").value = esComercial ? etapaDe(g) : "";
   $("ag-c-notas").value = g?.notas || "";
   $("ag-btn-eliminar").style.display = (g && esAdmin()) ? "inline-block" : "none";
+
+  // Trazabilidad
+  $("ag-link-wrap").style.display = esComercial ? "block" : "none";
+  poblarSelectDeals();
+  $("ag-c-deal").value = (g?.dealId && deals.some(d => d.id === g.dealId)) ? g.dealId : "";
+  alCambiarDeal();
+
   $("ag-modal").classList.add("open");
 }
 
@@ -751,22 +905,76 @@ async function guardar() {
     return;
   }
 
-  const datos = {
-    rep, ciudad, fecha, cuenta, oportunidad, tipoCliente, canal, modalidad, tipo,
-    hora: $("ag-c-hora").value,
-    etapa: tipo === "Comercial" ? etapa : "",
-    etapaVenta: tipo === "Comercial" ? etapa : "",
-    notas: $("ag-c-notas").value.trim(),
-    ts: new Date().toISOString()
-  };
-
+  // ── Trazabilidad con el pipeline ──
+  const vinculo = tipo === "Comercial" ? $("ag-c-deal").value : "";
+  let dealId = null;
   const btn = $("ag-btn-guardar");
   btn.disabled = true; btn.textContent = "Guardando...";
-  const res = editandoId ? await actualizarGestion(editandoId, datos) : await crearGestion(datos);
-  btn.disabled = false; btn.textContent = "💾 Guardar gestión";
 
-  if (res.ok) cerrarModal();
-  else err.textContent = res.error;
+  try {
+    if (vinculo === "__nueva__") {
+      // Crear la oportunidad nueva en el pipeline
+      const valor = parseFloat($("ag-c-deal-valor").value);
+      const estado = $("ag-c-deal-estado").value;
+      if (isNaN(valor) || !estado) {
+        err.textContent = "Para crear la oportunidad en el pipeline indica su estado y su valor.";
+        btn.disabled = false; btn.textContent = "💾 Guardar gestión";
+        return;
+      }
+      const resDeal = await crearDeal({
+        oportunidad, cuenta, rep, estado, valor,
+        prob: 0.5, esperado: Math.round(valor * 0.5),
+        canal: "", origen: "Agenda Comercial", comentarios: "Creada desde una gestión de la agenda"
+      });
+      if (!resDeal.ok) {
+        err.textContent = "No se pudo crear la oportunidad: " + resDeal.error;
+        btn.disabled = false; btn.textContent = "💾 Guardar gestión";
+        return;
+      }
+      dealId = resDeal.id;
+    } else if (vinculo) {
+      // Actualizar la oportunidad existente: estado + valor
+      // (la cuenta NO se toca: se mantiene la del pipeline)
+      const valor = parseFloat($("ag-c-deal-valor").value);
+      const estado = $("ag-c-deal-estado").value;
+      const cambios = {};
+      if (estado) cambios.estado = estado;
+      if (!isNaN(valor)) cambios.valor = valor;
+      const dealActual = deals.find(d => d.id === vinculo);
+      if (!isNaN(valor) && dealActual) {
+        const p = parseFloat(dealActual.prob) || 0;
+        cambios.esperado = Math.round(valor * p);
+      }
+      if (Object.keys(cambios).length) {
+        const resDeal = await actualizarDeal(vinculo, cambios);
+        if (!resDeal.ok) {
+          err.textContent = "No se pudo actualizar la oportunidad: " + resDeal.error;
+          btn.disabled = false; btn.textContent = "💾 Guardar gestión";
+          return;
+        }
+      }
+      dealId = vinculo;
+    }
+
+    // ── Guardar la gestión (con la referencia a la oportunidad) ──
+    const datos = {
+      rep, ciudad, fecha, cuenta, oportunidad, tipoCliente, canal, modalidad, tipo,
+      hora: $("ag-c-hora").value,
+      etapa: tipo === "Comercial" ? etapa : "",
+      etapaVenta: tipo === "Comercial" ? etapa : "",
+      notas: $("ag-c-notas").value.trim(),
+      dealId: dealId,
+      ts: new Date().toISOString()
+    };
+    const res = editandoId ? await actualizarGestion(editandoId, datos) : await crearGestion(datos);
+    btn.disabled = false; btn.textContent = "💾 Guardar gestión";
+    if (res.ok) cerrarModal();
+    else err.textContent = res.error;
+  } catch (e) {
+    console.error(e);
+    btn.disabled = false; btn.textContent = "💾 Guardar gestión";
+    err.textContent = "Ocurrió un error al guardar. Intenta de nuevo.";
+  }
 }
 
 async function eliminar() {
