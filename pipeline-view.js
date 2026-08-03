@@ -602,22 +602,29 @@ function renderDashboard() {
   //   Perdido → no cuenta
   // La barra apilada de cada mes = lo que se proyecta radicar ese mes.
   const mesGan = {}, mesEsp = {};
+  let sinMesGan = 0, sinMesEsp = 0;
   ganados.forEach(d => {
     const m = String(d.mes_radicacion || "").toLowerCase();
     if (MESES.includes(m)) mesGan[m] = (mesGan[m] || 0) + (parseFloat(d.valor) || 0);
+    else sinMesGan += parseFloat(d.valor) || 0;
   });
   activos.forEach(d => {
     const m = String(d.mes_radicacion || "").toLowerCase();
     if (MESES.includes(m)) mesEsp[m] = (mesEsp[m] || 0) + esperadoDe(d);
+    else sinMesEsp += esperadoDe(d);
   });
   const mesLabels = MESES.filter(m => mesGan[m] || mesEsp[m]);
+  const haySinMes = (sinMesGan + sinMesEsp) > 0;
+  const etiquetasMes = [...mesLabels.map(m => m.slice(0, 3).toUpperCase()), ...(haySinMes ? ["SIN MES"] : [])];
+  const dataGan = [...mesLabels.map(m => mesGan[m] || 0), ...(haySinMes ? [sinMesGan] : [])];
+  const dataEsp = [...mesLabels.map(m => mesEsp[m] || 0), ...(haySinMes ? [sinMesEsp] : [])];
   mkChart("ch-meses", {
     type: "bar",
     data: {
-      labels: mesLabels.map(m => m.slice(0, 3).toUpperCase()),
+      labels: etiquetasMes,
       datasets: [
-        { label: "Ganado (100%)", data: mesLabels.map(m => mesGan[m] || 0), backgroundColor: "#16a34a", borderRadius: 4 },
-        { label: "Esperado del activo", data: mesLabels.map(m => mesEsp[m] || 0), backgroundColor: "#7c3aed", borderRadius: 4 }
+        { label: "Ganado (100%)", data: dataGan, backgroundColor: "#16a34a", borderRadius: 4 },
+        { label: "Esperado del activo", data: dataEsp, backgroundColor: "#7c3aed", borderRadius: 4 }
       ]
     },
     options: {
@@ -625,6 +632,7 @@ function renderDashboard() {
       onClick: (evt, elems) => {
         if (!elems.length) return;
         const mes = mesLabels[elems[0].index];
+        if (!mes) return; // barra "SIN MES": no hay valor de mes por el cual filtrar
         filtros.mes = new Set(filtros.mes.size === 1 && filtros.mes.has(mes) ? [] : [mes]);
         actualizarMultiselects();
         render();
