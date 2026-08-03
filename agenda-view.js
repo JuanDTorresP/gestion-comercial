@@ -96,6 +96,15 @@ function mkChart(id, cfg) {
   if (!el || typeof Chart === "undefined") return;
   charts[id] = new Chart(el, cfg);
 }
+let toastTimer = null;
+function toast(msg) {
+  const el = document.getElementById("toast");
+  if (!el) return;
+  el.textContent = msg;
+  el.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove("show"), 2800);
+}
 function lunesDe(offset) {
   const hoy = new Date();
   const dia = (hoy.getDay() + 6) % 7;
@@ -123,7 +132,7 @@ function itemHtml(g) {
         </div>
         ${g.notas ? `<div class="ag-notas">${esc(g.notas)}</div>` : ""}
       </div>
-      ${puedeEditar(g) ? `<button class="btn-editar" data-id="${g.id}">✏️</button>` : ""}
+      ${puedeEditar(g) ? `<button class="btn-editar" data-id="${g.id}" title="Editar gestión" aria-label="Editar gestión">✏️</button>` : ""}
     </div>`;
 }
 function activarBotonesEditar(contenedor) {
@@ -311,6 +320,7 @@ function pintarEstructura() {
           ${ETAPAS.map(e => `<option>${e}</option>`).join("")}
         </select>
         <button class="btn-secundario" id="ag-f-limpiar" style="padding:7px 12px;font-size:12px">✕ Limpiar</button>
+        <button class="btn-secundario" id="ag-btn-csv" style="padding:7px 12px;font-size:12px">⬇ CSV</button>
         <span class="filtro-conteo" id="ag-conteo"></span>
       </div>
       <div class="card" id="ag-lista"></div>
@@ -475,6 +485,7 @@ function pintarEstructura() {
     ["ag-f-mes","ag-f-rep","ag-f-tipo","ag-f-etapa"].forEach(id => $(id).value = "");
     renderMensual();
   });
+  $("ag-btn-csv").addEventListener("click", exportarCSVAgenda);
 
   // Comparar
   $("cmp-a").addEventListener("change", (e) => { cmpA = e.target.value; renderComparar(); });
@@ -926,6 +937,24 @@ function filtrarMensual() {
   });
 }
 
+// Exporta a CSV las gestiones visibles con los filtros del reporte mensual
+function exportarCSVAgenda() {
+  const cols = ["fecha","hora","rep","cuenta","oportunidad","tipo","etapa","tipoCliente","canal","modalidad","ciudad","notas","dealId"];
+  const celda = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+  const filas = filtrarMensual().map(g => cols.map(k => {
+    if (k === "etapa") return etapaDe(g);
+    return g[k] ?? "";
+  }).map(celda).join(";"));
+  const csv = "\ufeff" + [cols.join(";"), ...filas].join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "agenda_" + new Date().toISOString().slice(0, 10) + ".csv";
+  a.click();
+  URL.revokeObjectURL(a.href);
+  toast(`⬇ CSV exportado: ${filas.length} gestiones`);
+}
+
 function renderMensual() {
   const visibles = filtrarMensual();
 
@@ -1227,9 +1256,15 @@ async function guardar() {
       dealId: dealId,
       ts: new Date().toISOString()
     };
-    const res = editandoId ? await actualizarGestion(editandoId, datos) : await crearGestion(datos);
+    const eraEdicion = !!editandoId;
+    const res = eraEdicion ? await actualizarGestion(editandoId, datos) : await crearGestion(datos);
     btn.disabled = false; btn.textContent = "💾 Guardar gestión";
-    if (res.ok) cerrarModal();
+    if (res.ok) {
+      cerrarModal();
+      toast(vinculo === "__nueva__" ? "✓ Gestión guardada · oportunidad creada en el pipeline"
+        : vinculo ? "✓ Gestión guardada · oportunidad del pipeline actualizada"
+        : (eraEdicion ? "✓ Gestión actualizada" : "✓ Gestión registrada"));
+    }
     else err.textContent = res.error;
   } catch (e) {
     console.error(e);
@@ -1242,6 +1277,6 @@ async function eliminar() {
   if (!editandoId) return;
   if (!confirm("¿Eliminar esta gestión? Esta acción no se puede deshacer.")) return;
   const res = await eliminarGestion(editandoId);
-  if (res.ok) cerrarModal();
+  if (res.ok) { cerrarModal(); toast("🗑 Gestión eliminada"); }
   else $("ag-modal-error").textContent = res.error;
 }

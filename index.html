@@ -3,7 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>CRM Famocdepanel</title>
+<title>Gestión Comercial · Famocdepanel</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🏢</text></svg>">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 <style>
 /* ═══ Mismo lenguaje visual de Pipeline 2026 y Agenda Comercial ═══ */
@@ -114,6 +115,10 @@ textarea.form-input{resize:vertical}
 .estado-conexion.cargando{background:var(--amber-l);color:#b45309}
 .estado-conexion.error{background:var(--red-l);color:#b91c1c}
 
+/* TOAST de confirmación */
+#toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(16px);background:#1a1a18;color:#fff;padding:11px 20px;border-radius:99px;font-size:13px;font-weight:600;opacity:0;pointer-events:none;transition:all .25s ease;z-index:9999;box-shadow:0 8px 24px rgba(0,0,0,.3);white-space:nowrap;max-width:92vw;overflow:hidden;text-overflow:ellipsis}
+#toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+
 @media(max-width:768px){
   .page{padding:12px}
   nav{padding:0 10px;height:48px}
@@ -131,8 +136,8 @@ textarea.form-input{resize:vertical}
 <div id="login-screen">
   <div class="login-box">
     <div class="login-logo">🏢</div>
-    <div class="login-title">CRM Famocdepanel</div>
-    <div class="login-sub">Pipeline · Agenda Comercial</div>
+    <div class="login-title">Gestión Comercial</div>
+    <div class="login-sub">Famocdepanel · Pipeline · Agenda</div>
     <input id="login-email" class="login-field" type="email" placeholder="Correo electrónico" autocomplete="username"/>
     <input id="login-pwd" class="login-field" type="password" placeholder="Contraseña" autocomplete="current-password"/>
     <button class="login-btn" id="login-btn">Iniciar sesión</button>
@@ -144,7 +149,7 @@ textarea.form-input{resize:vertical}
 <div id="app">
 
   <nav>
-    <span class="nav-brand">🏢 CRM Famocdepanel</span>
+    <span class="nav-brand">🏢 Gestión Comercial</span>
     <div class="nav-tabs">
       <button class="nav-tab active" id="tab-pipeline">📊 Pipeline</button>
       <button class="nav-tab" id="tab-agenda">📅 Agenda</button>
@@ -160,6 +165,7 @@ textarea.form-input{resize:vertical}
 
 </div>
 
+<div id="toast"></div>
 <script type="module" src="./app.js"></script>
 </body>
 </html>

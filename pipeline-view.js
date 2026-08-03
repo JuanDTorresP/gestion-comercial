@@ -127,6 +127,15 @@ function mkChart(id, cfg) {
   if (!el || typeof Chart === "undefined") return;
   charts[id] = new Chart(el, cfg);
 }
+let toastTimer = null;
+function toast(msg) {
+  const el = document.getElementById("toast");
+  if (!el) return;
+  el.textContent = msg;
+  el.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove("show"), 2800);
+}
 
 // ═══════════════════════════════════════════
 // ARRANQUE / PARADA (las llama app.js)
@@ -300,6 +309,7 @@ function pintarEstructura() {
     <div id="pl-sub-dash">
       <div class="m-grid" id="dash-cards"></div>
       <p class="hint">💡 Haz clic en las tarjetas, el embudo, los motivos o las barras de cuota para ver esas oportunidades.</p>
+      <div id="dash-salud" style="display:none;cursor:pointer;margin-bottom:16px;background:var(--amber-l);color:#92400e;border-radius:var(--r);padding:12px 16px;font-size:13px;font-weight:500"></div>
       <div class="pl-g2" style="margin-bottom:16px">
         <div class="card" style="margin-bottom:0">
           <p class="section-lbl">Forecast vs cuota ${ANIO_CUOTA}</p>
@@ -335,6 +345,9 @@ function pintarEstructura() {
       <div class="m-grid" id="pl-metricas"></div>
 
       <div class="card" style="padding:0 16px 8px">
+        <div style="display:flex;justify-content:flex-end;padding:10px 0 2px">
+          <button class="btn-secundario" id="pl-btn-csv" style="padding:6px 12px;font-size:12px">⬇ Exportar CSV</button>
+        </div>
         <div class="tbl-wrap">
           <table class="tbl" id="pl-tabla">
             <thead>
@@ -463,6 +476,7 @@ function pintarEstructura() {
     actualizarMultiselects();
     render();
   });
+  $("pl-btn-csv").addEventListener("click", exportarCSV);
 
   // Ordenamiento por encabezado
   $("pl-tabla").querySelectorAll("th[data-orden]").forEach(th => {
@@ -508,6 +522,27 @@ function irATablaFiltrada(estado, rep) {
   mostrarSub("tabla");
 }
 
+// Exporta a CSV lo que esté visible con los filtros actuales
+// (separador ; para que Excel en español lo abra directo)
+function exportarCSV() {
+  const cols = ["oportunidad","cuenta","rep","estado","valor","esperado","prob_pct","riesgo","tipo","canal","origen","segmento","broker","mes_inicio","mes_radicacion","anio_radicacion","motivo_perdida","comentarios"];
+  const celda = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+  const filas = filtrarDeals().map(d => cols.map(k => {
+    if (k === "esperado") return esperadoDe(d);
+    if (k === "prob_pct") return Math.round((parseFloat(d.prob) || 0) * 100);
+    if (k === "anio_radicacion") return anioDe(d) ?? "";
+    return d[k] ?? "";
+  }).map(celda).join(";"));
+  const csv = "\ufeff" + [cols.join(";"), ...filas].join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "pipeline_" + new Date().toISOString().slice(0, 10) + ".csv";
+  a.click();
+  URL.revokeObjectURL(a.href);
+  toast(`⬇ CSV exportado: ${filas.length} oportunidades`);
+}
+
 // ═══════════════════════════════════════════
 // DASHBOARD (gráficas)
 // ═══════════════════════════════════════════
@@ -534,6 +569,26 @@ function renderDashboard() {
         : Object.values(CUOTAS).reduce((s, c) => s + c, 0));
   const fPct = cuota > 0 ? Math.round((vGanado + vEsp) / cuota * 100) : 0;
   const colorF = fPct >= 100 ? "#16a34a" : fPct >= 80 ? "#d97706" : "#dc2626";
+
+  // 🩺 Salud de datos (solo Gerencia): huecos del histórico
+  const salud = $("dash-salud");
+  if (salud) {
+    const noPerdidas = baseDeals().filter(d => d.estado !== "Perdido");
+    const sinMes = noPerdidas.filter(d => !MESES.includes(String(d.mes_radicacion || "").toLowerCase())).length;
+    const sinProb = baseDeals().filter(d => ESTADOS_ACTIVOS.has(d.estado) && !(parseFloat(d.prob) > 0)).length;
+    if (!esAdmin() || sinMes + sinProb === 0) {
+      salud.style.display = "none";
+    } else {
+      salud.style.display = "block";
+      salud.innerHTML = `🩺 Calidad de datos: <b>${sinMes}</b> oportunidades sin mes de radicación · <b>${sinProb}</b> activas sin probabilidad — clic para revisarlas`;
+      salud.onclick = () => {
+        ordenCampo = "mes_radicacion"; ordenDir = 1;
+        renderTabla();
+        mostrarSub("tabla");
+        toast("Ordenado por radicación: las vacías quedan de primeras");
+      };
+    }
+  }
 
   // Tarjetas
   $("dash-cards").innerHTML = `
@@ -813,7 +868,7 @@ function renderTabla() {
         <td>${rBadge(d.riesgo)}</td>
         <td>${esc(d.mes_radicacion) || "—"}${anioDe(d) !== null ? " · " + anioDe(d) : ""}</td>
         <td style="text-align:right">${puedeEditar(d)
-          ? `<button class="btn-editar" data-id="${d.id}">✏️</button>` : ""}</td>
+          ? `<button class="btn-editar" data-id="${d.id}" title="Editar oportunidad" aria-label="Editar oportunidad">✏️</button>` : ""}</td>
       </tr>`;
     }).join("");
 
@@ -897,10 +952,14 @@ async function guardar() {
 
   const btn = $("pl-btn-guardar");
   btn.disabled = true; btn.textContent = "Guardando...";
-  const res = editandoId ? await actualizarDeal(editandoId, datos) : await crearDeal(datos);
+  const eraEdicion = !!editandoId;
+  const res = eraEdicion ? await actualizarDeal(editandoId, datos) : await crearDeal(datos);
   btn.disabled = false; btn.textContent = "💾 Guardar";
 
-  if (res.ok) cerrarModal();
+  if (res.ok) {
+    cerrarModal();
+    toast(eraEdicion ? "✓ Oportunidad actualizada" : "✓ Oportunidad creada");
+  }
   else err.textContent = res.error;
 }
 
@@ -908,6 +967,6 @@ async function eliminar() {
   if (!editandoId) return;
   if (!confirm("¿Eliminar esta oportunidad? Esta acción no se puede deshacer.")) return;
   const res = await eliminarDeal(editandoId);
-  if (res.ok) cerrarModal();
+  if (res.ok) { cerrarModal(); toast("🗑 Oportunidad eliminada"); }
   else $("pl-modal-error").textContent = res.error;
 }
