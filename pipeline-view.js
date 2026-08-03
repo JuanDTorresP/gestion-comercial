@@ -311,7 +311,7 @@ function pintarEstructura() {
         </div>
       </div>
       <div class="card">
-        <p class="section-lbl">Pipeline activo por mes de radicación — total vs esperado (excluye Ganado/Perdido · clic en un mes para ver sus oportunidades)</p>
+        <p class="section-lbl">Forecast de radicación por mes — Ganado al 100% + esperado del activo (clic en un mes para ver sus oportunidades)</p>
         <div style="height:210px;position:relative"><canvas id="ch-meses"></canvas></div>
       </div>
       <div class="pl-g2" style="margin-bottom:16px">
@@ -596,21 +596,28 @@ function renderDashboard() {
   });
 
   // Pipeline por mes de radicación
-  const mesVal = {}, mesEsp = {};
+  // Forecast de radicación mensual:
+  //   Ganado → cuenta al 100% de su valor en su mes de radicación
+  //   Activo → cuenta su valor esperado (valor × probabilidad)
+  //   Perdido → no cuenta
+  // La barra apilada de cada mes = lo que se proyecta radicar ese mes.
+  const mesGan = {}, mesEsp = {};
+  ganados.forEach(d => {
+    const m = String(d.mes_radicacion || "").toLowerCase();
+    if (MESES.includes(m)) mesGan[m] = (mesGan[m] || 0) + (parseFloat(d.valor) || 0);
+  });
   activos.forEach(d => {
     const m = String(d.mes_radicacion || "").toLowerCase();
-    if (!MESES.includes(m)) return;
-    mesVal[m] = (mesVal[m] || 0) + (parseFloat(d.valor) || 0);
-    mesEsp[m] = (mesEsp[m] || 0) + esperadoDe(d);
+    if (MESES.includes(m)) mesEsp[m] = (mesEsp[m] || 0) + esperadoDe(d);
   });
-  const mesLabels = MESES.filter(m => mesVal[m] || mesEsp[m]);
+  const mesLabels = MESES.filter(m => mesGan[m] || mesEsp[m]);
   mkChart("ch-meses", {
     type: "bar",
     data: {
       labels: mesLabels.map(m => m.slice(0, 3).toUpperCase()),
       datasets: [
-        { label: "Valor total (activo)", data: mesLabels.map(m => mesVal[m] || 0), backgroundColor: "#2563EB", borderRadius: 4 },
-        { label: "Valor esperado", data: mesLabels.map(m => mesEsp[m] || 0), backgroundColor: "#7c3aed", borderRadius: 4 }
+        { label: "Ganado (100%)", data: mesLabels.map(m => mesGan[m] || 0), backgroundColor: "#16a34a", borderRadius: 4 },
+        { label: "Esperado del activo", data: mesLabels.map(m => mesEsp[m] || 0), backgroundColor: "#7c3aed", borderRadius: 4 }
       ]
     },
     options: {
@@ -625,9 +632,18 @@ function renderDashboard() {
       },
       plugins: {
         legend: { position: "top", labels: { boxWidth: 10, font: { size: 11 } } },
-        tooltip: { callbacks: { label: c2 => c2.dataset.label + ": " + fmtFull(c2.raw) } }
+        tooltip: { callbacks: {
+          label: c2 => c2.dataset.label + ": " + fmtFull(c2.raw),
+          footer: (items) => {
+            const total = items.reduce((s, it) => s + (it.raw || 0), 0);
+            return "Forecast del mes: " + fmtFull(total);
+          }
+        } }
       },
-      scales: { x: { grid: { display: false } }, y: { ticks: { callback: v => fmt(v) } } }
+      scales: {
+        x: { stacked: true, grid: { display: false } },
+        y: { stacked: true, ticks: { callback: v => fmt(v) } }
+      }
     }
   });
 
