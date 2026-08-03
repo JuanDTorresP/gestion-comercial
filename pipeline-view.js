@@ -311,7 +311,7 @@ function pintarEstructura() {
         </div>
       </div>
       <div class="card">
-        <p class="section-lbl">Pipeline activo por mes de radicación</p>
+        <p class="section-lbl">Valor esperado por mes de radicación (pipeline activo)</p>
         <div style="height:210px;position:relative"><canvas id="ch-meses"></canvas></div>
       </div>
       <div class="pl-g2" style="margin-bottom:16px">
@@ -599,14 +599,14 @@ function renderDashboard() {
   const mesMap = {};
   activos.forEach(d => {
     const m = String(d.mes_radicacion || "").toLowerCase();
-    if (MESES.includes(m)) mesMap[m] = (mesMap[m] || 0) + (parseFloat(d.valor) || 0);
+    if (MESES.includes(m)) mesMap[m] = (mesMap[m] || 0) + esperadoDe(d);
   });
   const mesLabels = MESES.filter(m => mesMap[m]);
   mkChart("ch-meses", {
     type: "bar",
     data: {
       labels: mesLabels.map(m => m.slice(0, 3).toUpperCase()),
-      datasets: [{ data: mesLabels.map(m => mesMap[m]), backgroundColor: "#2563EB", borderRadius: 4 }]
+      datasets: [{ data: mesLabels.map(m => mesMap[m]), backgroundColor: "#7c3aed", borderRadius: 4 }]
     },
     options: {
       responsive: true, maintainAspectRatio: false,
