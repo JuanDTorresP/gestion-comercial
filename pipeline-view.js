@@ -159,7 +159,7 @@ const MS_DEFS = [
   { id: "ms-canal",  clave: "canal",  etiqueta: "Canal",    opciones: () => valoresUnicos("canal") },
   { id: "ms-riesgo", clave: "riesgo", etiqueta: "Riesgo",   opciones: () => valoresUnicos("riesgo") },
   { id: "ms-mes",    clave: "mes",    etiqueta: "Mes rad.", opciones: () => MESES.filter(m => valoresUnicos("mes_radicacion").includes(m)) },
-  { id: "ms-anio",   clave: "anio",   etiqueta: "Año rad.", opciones: () => valoresUnicos("anio_radicacion").map(String) }
+  { id: "ms-anio",   clave: "anio",   etiqueta: "Año rad.", opciones: () => [...new Set(baseDeals().map(anioDe).filter(a => a !== null))].sort((a, b) => b - a).map(String) }
 ];
 let msListo = false;
 
@@ -311,7 +311,7 @@ function pintarEstructura() {
         </div>
       </div>
       <div class="card">
-        <p class="section-lbl">Valor esperado por mes de radicación (pipeline activo)</p>
+        <p class="section-lbl">Pipeline activo por mes de radicación — total vs esperado (excluye Ganado/Perdido · clic en un mes para ver sus oportunidades)</p>
         <div style="height:210px;position:relative"><canvas id="ch-meses"></canvas></div>
       </div>
       <div class="pl-g2" style="margin-bottom:16px">
@@ -596,21 +596,37 @@ function renderDashboard() {
   });
 
   // Pipeline por mes de radicación
-  const mesMap = {};
+  const mesVal = {}, mesEsp = {};
   activos.forEach(d => {
     const m = String(d.mes_radicacion || "").toLowerCase();
-    if (MESES.includes(m)) mesMap[m] = (mesMap[m] || 0) + esperadoDe(d);
+    if (!MESES.includes(m)) return;
+    mesVal[m] = (mesVal[m] || 0) + (parseFloat(d.valor) || 0);
+    mesEsp[m] = (mesEsp[m] || 0) + esperadoDe(d);
   });
-  const mesLabels = MESES.filter(m => mesMap[m]);
+  const mesLabels = MESES.filter(m => mesVal[m] || mesEsp[m]);
   mkChart("ch-meses", {
     type: "bar",
     data: {
       labels: mesLabels.map(m => m.slice(0, 3).toUpperCase()),
-      datasets: [{ data: mesLabels.map(m => mesMap[m]), backgroundColor: "#7c3aed", borderRadius: 4 }]
+      datasets: [
+        { label: "Valor total (activo)", data: mesLabels.map(m => mesVal[m] || 0), backgroundColor: "#2563EB", borderRadius: 4 },
+        { label: "Valor esperado", data: mesLabels.map(m => mesEsp[m] || 0), backgroundColor: "#7c3aed", borderRadius: 4 }
+      ]
     },
     options: {
       responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => fmtFull(c.raw) } } },
+      onClick: (evt, elems) => {
+        if (!elems.length) return;
+        const mes = mesLabels[elems[0].index];
+        filtros.mes = new Set(filtros.mes.size === 1 && filtros.mes.has(mes) ? [] : [mes]);
+        actualizarMultiselects();
+        render();
+        mostrarSub("tabla");
+      },
+      plugins: {
+        legend: { position: "top", labels: { boxWidth: 10, font: { size: 11 } } },
+        tooltip: { callbacks: { label: c2 => c2.dataset.label + ": " + fmtFull(c2.raw) } }
+      },
       scales: { x: { grid: { display: false } }, y: { ticks: { callback: v => fmt(v) } } }
     }
   });
@@ -706,7 +722,7 @@ function filtrarDeals() {
     if (filtros.canal.size && !filtros.canal.has(String(d.canal || "").trim())) return false;
     if (filtros.riesgo.size && !filtros.riesgo.has(String(d.riesgo || "").trim())) return false;
     if (filtros.mes.size && !filtros.mes.has(d.mes_radicacion)) return false;
-    if (filtros.anio.size && !filtros.anio.has(String(d.anio_radicacion || ""))) return false;
+    if (filtros.anio.size && !filtros.anio.has(String(anioDe(d) ?? ""))) return false;
     if (filtros.texto) {
       const blob = ((d.oportunidad || "") + " " + (d.cuenta || "") + " " + (d.broker || "")).toLowerCase();
       if (!blob.includes(filtros.texto)) return false;
