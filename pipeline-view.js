@@ -59,7 +59,7 @@ let charts = {};
 const filtros = {
   texto: "",
   rep: new Set(), estado: new Set(), tipo: new Set(), canal: new Set(),
-  riesgo: new Set(), mes: new Set(), anio: new Set()
+  origen: new Set(), riesgo: new Set(), mes: new Set(), anio: new Set()
 };
 
 // ── Utilidades ──
@@ -166,6 +166,7 @@ const MS_DEFS = [
   { id: "ms-estado", clave: "estado", etiqueta: "Estado",   opciones: () => ESTADOS.slice() },
   { id: "ms-tipo",   clave: "tipo",   etiqueta: "Tipo",     opciones: () => valoresUnicos("tipo") },
   { id: "ms-canal",  clave: "canal",  etiqueta: "Canal",    opciones: () => valoresUnicos("canal") },
+  { id: "ms-origen", clave: "origen", etiqueta: "Origen",   opciones: () => valoresUnicos("origen") },
   { id: "ms-riesgo", clave: "riesgo", etiqueta: "Riesgo",   opciones: () => valoresUnicos("riesgo") },
   { id: "ms-mes",    clave: "mes",    etiqueta: "Mes rad.", opciones: () => MESES.filter(m => valoresUnicos("mes_radicacion").includes(m)) },
   { id: "ms-anio",   clave: "anio",   etiqueta: "Año rad.", opciones: () => [...new Set(baseDeals().map(anioDe).filter(a => a !== null))].sort((a, b) => b - a).map(String) }
@@ -298,6 +299,7 @@ function pintarEstructura() {
         <div class="ms" id="ms-estado"><button type="button" class="ms-btn">Estado: Todos</button><div class="ms-panel"></div></div>
         <div class="ms" id="ms-tipo"><button type="button" class="ms-btn">Tipo: Todos</button><div class="ms-panel"></div></div>
         <div class="ms" id="ms-canal"><button type="button" class="ms-btn">Canal: Todos</button><div class="ms-panel"></div></div>
+        <div class="ms" id="ms-origen"><button type="button" class="ms-btn">Origen: Todos</button><div class="ms-panel"></div></div>
         <div class="ms" id="ms-riesgo"><button type="button" class="ms-btn">Riesgo: Todos</button><div class="ms-panel"></div></div>
         <div class="ms" id="ms-mes"><button type="button" class="ms-btn">Mes rad.: Todos</button><div class="ms-panel"></div></div>
         <div class="ms" id="ms-anio"><button type="button" class="ms-btn">Año rad.: Todos</button><div class="ms-panel"></div></div>
@@ -799,6 +801,7 @@ function filtrarDeals() {
     if (filtros.estado.size && !filtros.estado.has(d.estado)) return false;
     if (filtros.tipo.size && !filtros.tipo.has(String(d.tipo || "").trim())) return false;
     if (filtros.canal.size && !filtros.canal.has(String(d.canal || "").trim())) return false;
+    if (filtros.origen.size && !filtros.origen.has(String(d.origen || "").trim())) return false;
     if (filtros.riesgo.size && !filtros.riesgo.has(String(d.riesgo || "").trim())) return false;
     if (filtros.mes.size && !filtros.mes.has(d.mes_radicacion)) return false;
     if (filtros.anio.size && !filtros.anio.has(String(anioDe(d) ?? ""))) return false;
