@@ -45,7 +45,7 @@ let semRep = "", semTipo = "", semMod = "";
 let cmpA = "", cmpB = "";
 let eqMes = "";
 let mesInicializado = false;
-const filtros = { texto: "", rep: "", tipo: "", etapa: "", mes: "", tipoCliente: "" };
+const filtros = { texto: "", rep: "", tipo: "", etapa: "", mes: "", tipoCliente: "", canal: "", modalidad: "" };
 
 // ── Utilidades ──
 const $ = (id) => document.getElementById(id);
@@ -316,6 +316,16 @@ function pintarEstructura() {
           <option>Comercial</option>
           <option>Operativo</option>
         </select>
+        <select class="filtro-select" id="ag-f-canal">
+          <option value="">Canal: Todos</option>
+          <option>Retail</option>
+          <option>Corporativo</option>
+        </select>
+        <select class="filtro-select" id="ag-f-modalidad">
+          <option value="">Modalidad: Todas</option>
+          <option>Virtual</option>
+          <option>Presencial</option>
+        </select>
         <select class="filtro-select" id="ag-f-etapa"><option value="">Etapa: Todas</option>
           ${ETAPAS.map(e => `<option>${e}</option>`).join("")}
         </select>
@@ -476,13 +486,13 @@ function pintarEstructura() {
 
   // Filtros del mensual
   $("ag-f-texto").addEventListener("input", (e) => { filtros.texto = e.target.value.toLowerCase(); renderMensual(); });
-  [["ag-f-mes","mes"],["ag-f-rep","rep"],["ag-f-tipo","tipo"],["ag-f-etapa","etapa"]].forEach(([id, clave]) => {
+  [["ag-f-mes","mes"],["ag-f-rep","rep"],["ag-f-tipo","tipo"],["ag-f-etapa","etapa"],["ag-f-canal","canal"],["ag-f-modalidad","modalidad"]].forEach(([id, clave]) => {
     $(id).addEventListener("change", (e) => { filtros[clave] = e.target.value; renderMensual(); });
   });
   $("ag-f-limpiar").addEventListener("click", () => {
     Object.keys(filtros).forEach(k => filtros[k] = "");
     $("ag-f-texto").value = "";
-    ["ag-f-mes","ag-f-rep","ag-f-tipo","ag-f-etapa"].forEach(id => $(id).value = "");
+    ["ag-f-mes","ag-f-rep","ag-f-tipo","ag-f-etapa","ag-f-canal","ag-f-modalidad"].forEach(id => $(id).value = "");
     renderMensual();
   });
   $("ag-btn-csv").addEventListener("click", exportarCSVAgenda);
@@ -690,9 +700,10 @@ function renderMiAgenda() {
   $("mia-btn-nueva").addEventListener("click", () => abrirModal(null));
   const irMensual = (tipo, tipoCliente) => {
     filtros.mes = mesClave; filtros.tipo = tipo || ""; filtros.tipoCliente = tipoCliente || "";
-    filtros.etapa = ""; filtros.texto = "";
+    filtros.etapa = ""; filtros.texto = ""; filtros.canal = ""; filtros.modalidad = "";
     $("ag-f-mes").value = mesClave; $("ag-f-tipo").value = filtros.tipo;
     $("ag-f-etapa").value = ""; $("ag-f-texto").value = "";
+    $("ag-f-canal").value = ""; $("ag-f-modalidad").value = "";
     renderMensual();
     mostrarSub("mes");
   };
@@ -789,9 +800,11 @@ function renderEquipo() {
     filtros.rep = nombre;
     filtros.mes = eqMes;
     filtros.tipo = ""; filtros.etapa = ""; filtros.tipoCliente = ""; filtros.texto = "";
+    filtros.canal = ""; filtros.modalidad = "";
     $("ag-f-rep").value = filtros.rep;
     $("ag-f-mes").value = filtros.mes;
     $("ag-f-tipo").value = ""; $("ag-f-etapa").value = ""; $("ag-f-texto").value = "";
+    $("ag-f-canal").value = ""; $("ag-f-modalidad").value = "";
     renderMensual();
     mostrarSub("mes");
   };
@@ -927,6 +940,8 @@ function filtrarMensual() {
     if (filtros.mes && mesDe(g) !== filtros.mes) return false;
     if (filtros.rep && g.rep !== filtros.rep) return false;
     if (filtros.tipo && g.tipo !== filtros.tipo) return false;
+    if (filtros.canal && g.canal !== filtros.canal) return false;
+    if (filtros.modalidad && g.modalidad !== filtros.modalidad) return false;
     if (filtros.etapa && etapaDe(g) !== filtros.etapa) return false;
     if (filtros.tipoCliente && g.tipoCliente !== filtros.tipoCliente) return false;
     if (filtros.texto) {
@@ -986,7 +1001,9 @@ function renderMensual() {
   `;
   $("mc-todas").addEventListener("click", () => {
     filtros.tipo = ""; filtros.tipoCliente = ""; filtros.etapa = ""; filtros.rep = "";
+    filtros.canal = ""; filtros.modalidad = "";
     $("ag-f-tipo").value = ""; $("ag-f-etapa").value = ""; $("ag-f-rep").value = "";
+    $("ag-f-canal").value = ""; $("ag-f-modalidad").value = "";
     renderMensual();
   });
   $("mc-com").addEventListener("click", () => {
