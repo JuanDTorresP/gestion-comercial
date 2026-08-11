@@ -148,7 +148,7 @@ function activarBotonesEditar(contenedor) {
 // ARRANQUE / PARADA
 // ═══════════════════════════════════════════
 export function iniciarAgenda() {
-  semanaOffset = 0; semRep = ""; semTipo = ""; semMod = ""; cmpA = ""; cmpB = ""; mesInicializado = false;
+  semanaOffset = 0; semRep = ""; semTipo = ""; semMod = ""; cmpA = ""; cmpB = ""; eqMes = ""; mesInicializado = false;
   Object.keys(filtros).forEach(k => filtros[k] = "");
   pintarEstructura();
   if (parar) parar();

@@ -141,6 +141,11 @@ function toast(msg) {
 // ARRANQUE / PARADA (las llama app.js)
 // ═══════════════════════════════════════════
 export function iniciarPipeline() {
+  // Estado limpio por sesión: sin esto, los filtros del usuario
+  // anterior quedarían activos (invisibles) para el siguiente.
+  filtros.texto = "";
+  MS_DEFS.forEach(def => filtros[def.clave].clear());
+  ordenCampo = "valor"; ordenDir = -1;
   pintarEstructura();
   if (parar) parar();
   parar = suscribirDeals(
