@@ -19,6 +19,7 @@ import {
   collection,
   doc,
   addDoc,
+  setDoc,
   updateDoc,
   deleteDoc,
   onSnapshot,
@@ -137,6 +138,36 @@ export async function eliminarGestion(id) {
     return { ok: true };
   } catch (error) {
     console.error("Error eliminando gestión:", error);
+    return { ok: false, error: traducirErrorFirestore(error) };
+  }
+}
+
+// ───────────────────────────────────────────────
+// CONFIGURACIÓN: cuotas del equipo (config/cuotas)
+// Documento único: { anio: 2026, valores: { "Nombre Rep": cuota } }
+// Todos pueden leerlo (cada rep necesita su cuota);
+// solo Gerencia puede escribirlo (lo imponen las reglas).
+// ───────────────────────────────────────────────
+
+export function suscribirCuotas(callback, onError) {
+  return onSnapshot(doc(db, "config", "cuotas"), (snap) => {
+    callback(snap.exists() ? snap.data() : null);
+  }, (error) => {
+    console.error("Error escuchando cuotas:", error);
+    if (onError) onError(error);
+  });
+}
+
+export async function guardarCuotas(anio, valores) {
+  try {
+    await setDoc(doc(db, "config", "cuotas"), {
+      anio,
+      valores,
+      actualizadoEn: serverTimestamp()
+    });
+    return { ok: true };
+  } catch (error) {
+    console.error("Error guardando cuotas:", error);
     return { ok: false, error: traducirErrorFirestore(error) };
   }
 }
