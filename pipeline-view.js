@@ -204,9 +204,22 @@ const MS_DEFS = [
   { id: "ms-rep",    clave: "rep",    etiqueta: "Rep",      opciones: () => valoresUnicos("rep", REPS_BASE) },
   { id: "ms-estado", clave: "estado", etiqueta: "Estado",   opciones: () => ESTADOS.slice() },
   { id: "ms-tipo",   clave: "tipo",   etiqueta: "Tipo",     opciones: () => valoresUnicos("tipo") },
-  { id: "ms-canal",  clave: "canal",  etiqueta: "Canal",    opciones: () => valoresUnicos("canal") },
-  { id: "ms-seg",    clave: "segmento", etiqueta: "Segmento", opciones: () => [...new Set(baseDeals().map(segmentoDe).filter(Boolean))].sort() },
-  { id: "ms-origen", clave: "origen", etiqueta: "Origen",   opciones: () => valoresUnicos("origen") },
+  { id: "ms-canal",  clave: "canal",  etiqueta: "Canal",    opciones: () => {
+      const ops = valoresUnicos("canal");
+      if (baseDeals().some(d => !String(d.canal || "").trim())) ops.push("Sin canal");
+      return ops;
+    } },
+  { id: "ms-seg",    clave: "segmento", etiqueta: "Segmento", opciones: () => {
+      const s = new Set(baseDeals().map(segmentoDe));
+      const ops = [...s].filter(Boolean).sort();
+      if (s.has("")) ops.push("Sin segmento");
+      return ops;
+    } },
+  { id: "ms-origen", clave: "origen", etiqueta: "Origen",   opciones: () => {
+      const ops = valoresUnicos("origen");
+      if (baseDeals().some(d => !String(d.origen || "").trim())) ops.push("Sin origen");
+      return ops;
+    } },
   { id: "ms-riesgo", clave: "riesgo", etiqueta: "Riesgo",   opciones: () => valoresUnicos("riesgo") },
   { id: "ms-mes",    clave: "mes",    etiqueta: "Mes rad.", opciones: () => MESES.filter(m => valoresUnicos("mes_radicacion").includes(m)) },
   { id: "ms-anio",   clave: "anio",   etiqueta: "Año rad.", opciones: () => [...new Set(baseDeals().map(anioDe).filter(a => a !== null))].sort((a, b) => b - a).map(String) }
@@ -929,7 +942,6 @@ function renderDashboard() {
       onClick: (evt, elems) => {
         if (!elems.length) return;
         const k = segLabels[elems[0].index];
-        if (k === "Sin segmento") return;
         filtros.segmento = new Set([k]);
         actualizarMultiselects(); render(); mostrarSub("tabla");
       },
@@ -966,8 +978,7 @@ function renderDashboard() {
       onClick: (evt, elems) => {
         if (!elems.length) return;
         const k = canalLabels[elems[0].index];
-        if (k === "Sin canal") return;
-        filtros.canal = new Set([...bucketsCanal[k].crudos]);
+        filtros.canal = k === "Sin canal" ? new Set(["Sin canal"]) : new Set([...bucketsCanal[k].crudos]);
         actualizarMultiselects(); render(); mostrarSub("tabla");
       },
       plugins: {
@@ -1000,7 +1011,6 @@ function renderDashboard() {
       onClick: (evt, elems) => {
         if (!elems.length) return;
         const k = origenLabels[elems[0].index];
-        if (k === "Sin origen") return;
         filtros.origen = new Set([k]);
         actualizarMultiselects(); render(); mostrarSub("tabla");
       },
@@ -1063,9 +1073,9 @@ function filtrarDeals() {
     if (filtros.rep.size && !filtros.rep.has(d.rep)) return false;
     if (filtros.estado.size && !filtros.estado.has(d.estado)) return false;
     if (filtros.tipo.size && !filtros.tipo.has(String(d.tipo || "").trim())) return false;
-    if (filtros.canal.size && !filtros.canal.has(String(d.canal || "").trim())) return false;
-    if (filtros.segmento.size && !filtros.segmento.has(segmentoDe(d))) return false;
-    if (filtros.origen.size && !filtros.origen.has(String(d.origen || "").trim())) return false;
+    if (filtros.canal.size && !filtros.canal.has(String(d.canal || "").trim() || "Sin canal")) return false;
+    if (filtros.segmento.size && !filtros.segmento.has(segmentoDe(d) || "Sin segmento")) return false;
+    if (filtros.origen.size && !filtros.origen.has(String(d.origen || "").trim() || "Sin origen")) return false;
     if (filtros.riesgo.size && !filtros.riesgo.has(String(d.riesgo || "").trim())) return false;
     if (filtros.mes.size && !filtros.mes.has(d.mes_radicacion)) return false;
     if (filtros.anio.size && !filtros.anio.has(String(anioDe(d) ?? ""))) return false;
