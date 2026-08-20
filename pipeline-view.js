@@ -62,7 +62,7 @@ let charts = {};
 const filtros = {
   texto: "",
   rep: new Set(), estado: new Set(), tipo: new Set(), canal: new Set(),
-  origen: new Set(), riesgo: new Set(), mes: new Set(), anio: new Set()
+  segmento: new Set(), origen: new Set(), riesgo: new Set(), mes: new Set(), anio: new Set()
 };
 
 // ── Utilidades ──
@@ -112,6 +112,16 @@ function esperadoDe(d) {
 }
 // ¿El registro cuenta para el año de cuota? (regla del Pipeline viejo:
 // sin año se asume del año en curso; otro año queda excluido)
+// Clasifica la oportunidad como Retail o Corporativo leyendo
+// TANTO el campo canal como el campo segmento (el histórico
+// guarda este dato en cualquiera de los dos, con mayúsculas variadas).
+function segmentoDe(d) {
+  const c = String(d.canal || "").trim().toLowerCase();
+  const s = String(d.segmento || "").trim().toLowerCase();
+  if (c === "retail" || s === "retail") return "Retail";
+  if (c === "corporativo" || s === "corporativo") return "Corporativo";
+  return "";
+}
 function anioDe(d) {
   // Extrae el año sin importar el formato: 2026, "2026", "2026 ", "2.026"...
   const s = String(d.anio_radicacion ?? "").trim();
@@ -195,6 +205,7 @@ const MS_DEFS = [
   { id: "ms-estado", clave: "estado", etiqueta: "Estado",   opciones: () => ESTADOS.slice() },
   { id: "ms-tipo",   clave: "tipo",   etiqueta: "Tipo",     opciones: () => valoresUnicos("tipo") },
   { id: "ms-canal",  clave: "canal",  etiqueta: "Canal",    opciones: () => valoresUnicos("canal") },
+  { id: "ms-seg",    clave: "segmento", etiqueta: "Retail/Corp.", opciones: () => [...new Set(baseDeals().map(segmentoDe).filter(Boolean))].sort() },
   { id: "ms-origen", clave: "origen", etiqueta: "Origen",   opciones: () => valoresUnicos("origen") },
   { id: "ms-riesgo", clave: "riesgo", etiqueta: "Riesgo",   opciones: () => valoresUnicos("riesgo") },
   { id: "ms-mes",    clave: "mes",    etiqueta: "Mes rad.", opciones: () => MESES.filter(m => valoresUnicos("mes_radicacion").includes(m)) },
@@ -331,6 +342,7 @@ function pintarEstructura() {
         <div class="ms" id="ms-estado"><button type="button" class="ms-btn">Estado: Todos</button><div class="ms-panel"></div></div>
         <div class="ms" id="ms-tipo"><button type="button" class="ms-btn">Tipo: Todos</button><div class="ms-panel"></div></div>
         <div class="ms" id="ms-canal"><button type="button" class="ms-btn">Canal: Todos</button><div class="ms-panel"></div></div>
+        <div class="ms" id="ms-seg"><button type="button" class="ms-btn">Retail/Corp.: Todos</button><div class="ms-panel"></div></div>
         <div class="ms" id="ms-origen"><button type="button" class="ms-btn">Origen: Todos</button><div class="ms-panel"></div></div>
         <div class="ms" id="ms-riesgo"><button type="button" class="ms-btn">Riesgo: Todos</button><div class="ms-panel"></div></div>
         <div class="ms" id="ms-mes"><button type="button" class="ms-btn">Mes rad.: Todos</button><div class="ms-panel"></div></div>
@@ -370,7 +382,7 @@ function pintarEstructura() {
       </div>
       <div class="pl-g2" style="margin-bottom:16px">
         <div class="card" style="margin-bottom:0">
-          <p class="section-lbl">Retail vs Corporativo (canal)</p>
+          <p class="section-lbl">Retail vs Corporativo</p>
           <div style="height:200px;position:relative"><canvas id="ch-canal"></canvas></div>
           <div class="hint" id="sum-canal" style="margin:10px 0 0"></div>
         </div>
@@ -890,16 +902,12 @@ function renderDashboard() {
   const PALETA_EXTRA = ["#7c3aed", "#0d9488", "#dc2626", "#16a34a", "#6b7280", "#b45309"];
   const bucketsCanal = {};
   propios.forEach(d => {
-    const crudo = String(d.canal || "").trim();
-    const clave = crudo.toLowerCase() === "retail" ? "Retail"
-      : crudo.toLowerCase() === "corporativo" ? "Corporativo"
-      : (crudo || "Sin canal");
-    const b = bucketsCanal[clave] = bucketsCanal[clave] || { n: 0, v: 0, crudos: new Set() };
+    const clave = segmentoDe(d) || "Sin clasificar";
+    const b = bucketsCanal[clave] = bucketsCanal[clave] || { n: 0, v: 0 };
     b.n++; b.v += parseFloat(d.valor) || 0;
-    if (crudo) b.crudos.add(crudo);
   });
   const canalLabels = Object.keys(bucketsCanal).sort((a, b) => bucketsCanal[b].v - bucketsCanal[a].v);
-  const CANAL_COLORS = { "Retail": "#d97706", "Corporativo": "#2563EB", "Sin canal": "#9b9b96" };
+  const CANAL_COLORS = { "Retail": "#d97706", "Corporativo": "#2563EB", "Sin clasificar": "#9b9b96" };
   mkChart("ch-canal", {
     type: "doughnut",
     data: {
@@ -912,9 +920,8 @@ function renderDashboard() {
       onClick: (evt, elems) => {
         if (!elems.length) return;
         const k = canalLabels[elems[0].index];
-        const crudos = [...bucketsCanal[k].crudos];
-        if (!crudos.length) return;
-        filtros.canal = new Set(crudos);
+        if (k === "Sin clasificar") return;
+        filtros.segmento = new Set([k]);
         actualizarMultiselects(); render(); mostrarSub("tabla");
       },
       plugins: {
@@ -1011,6 +1018,7 @@ function filtrarDeals() {
     if (filtros.estado.size && !filtros.estado.has(d.estado)) return false;
     if (filtros.tipo.size && !filtros.tipo.has(String(d.tipo || "").trim())) return false;
     if (filtros.canal.size && !filtros.canal.has(String(d.canal || "").trim())) return false;
+    if (filtros.segmento.size && !filtros.segmento.has(segmentoDe(d))) return false;
     if (filtros.origen.size && !filtros.origen.has(String(d.origen || "").trim())) return false;
     if (filtros.riesgo.size && !filtros.riesgo.has(String(d.riesgo || "").trim())) return false;
     if (filtros.mes.size && !filtros.mes.has(d.mes_radicacion)) return false;
