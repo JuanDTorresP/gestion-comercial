@@ -10,21 +10,23 @@
 // ═══════════════════════════════════════════════════════════
 
 import { obtenerUsuario, esAdmin } from "./auth-service.js";
-import { suscribirDeals, crearDeal, actualizarDeal, eliminarDeal } from "./firestore-service.js";
+import { suscribirDeals, crearDeal, actualizarDeal, eliminarDeal, suscribirCuotas, guardarCuotas } from "./firestore-service.js";
 
 // ═══════════════════════════════════════════
-// ⚙️ CUOTAS 2026 — EDITAR AQUÍ CUANDO CAMBIEN
-// La cuota total del equipo es la suma de estas.
-// Si alguien sale del equipo, borra su línea y su cuota
-// deja de contar automáticamente.
+// ⚙️ CUOTAS — ahora se administran DESDE EL CRM
+// Gerencia las edita con el botón "⚙️ Cuotas" y quedan
+// guardadas en Firestore (config/cuotas). Estos valores
+// son solo el respaldo inicial, usados únicamente hasta
+// el primer guardado desde el CRM.
 // ═══════════════════════════════════════════
-const ANIO_CUOTA = 2026;
-const CUOTAS = {
+const CUOTAS_DEFECTO = {
   "Patricia Lopera":      4500000000,
   "Clemencia Rodriguez":  4500000000,
   "Ivan Muñoz":           4500000000,
   "Johana Mayo":          5400000000
 };
+let ANIO_CUOTA = 2026;
+let CUOTAS = { ...CUOTAS_DEFECTO };
 
 // ── Constantes de negocio (mismas del Pipeline viejo) ──
 const ESTADOS = ["Identificado", "Cotizado", "En diseño", "Negociación", "On hold", "Ganado", "Perdido"];
@@ -51,6 +53,7 @@ const RIESGO_STYLE = {
 // ── Estado interno ──
 let deals = [];
 let parar = null;
+let pararCuotas = null;
 let editandoId = null;
 let ordenCampo = "valor", ordenDir = -1;
 let charts = {};
@@ -155,10 +158,31 @@ export function iniciarPipeline() {
         `<div class="estado-conexion error">✕ No se pudo conectar al Pipeline. Revisa tu conexión o tus permisos.</div>`;
     }
   );
+  // Cuotas en vivo desde Firestore (si aún no existen, quedan los valores por defecto)
+  if (pararCuotas) pararCuotas();
+  pararCuotas = suscribirCuotas((cfg) => {
+    if (cfg && cfg.valores && Object.keys(cfg.valores).length) {
+      CUOTAS = cfg.valores;
+      const a = parseInt(cfg.anio);
+      if (!isNaN(a)) ANIO_CUOTA = a;
+      actualizarTitulosAnio();
+      actualizarOpcionesFiltros();
+      render();
+    }
+  });
+}
+
+// Los títulos fijos que mencionan el año se refrescan si el año cambia
+function actualizarTitulosAnio() {
+  const set = (id, txt) => { const el = $(id); if (el) el.textContent = txt; };
+  set("lbl-dona", `Forecast vs cuota ${ANIO_CUOTA}`);
+  set("lbl-gvp", `Ganado vs Perdido por mes (${ANIO_CUOTA})`);
+  set("lbl-cuotas", `Avance de cuota por rep (Ganado ${ANIO_CUOTA})`);
 }
 
 export function detenerPipeline() {
   if (parar) { parar(); parar = null; }
+  if (pararCuotas) { pararCuotas(); pararCuotas = null; }
   Object.keys(charts).forEach(k => { charts[k].destroy(); delete charts[k]; });
   deals = [];
 }
@@ -287,7 +311,10 @@ function pintarEstructura() {
         <div class="page-title">Pipeline</div>
         <div class="page-sub">${esAdmin() ? "Oportunidades comerciales del equipo" : "Mi pipeline — " + esc(u.nombreRep)}</div>
       </div>
-      <button class="btn-primario" id="pl-btn-nueva">＋ Nueva oportunidad</button>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        ${esAdmin() ? `<button class="btn-secundario" id="pl-btn-cuotas">⚙️ Cuotas</button>` : ""}
+        <button class="btn-primario" id="pl-btn-nueva">＋ Nueva oportunidad</button>
+      </div>
     </div>
 
     <div class="pl-subtabs">
@@ -319,7 +346,7 @@ function pintarEstructura() {
       <div id="dash-salud" style="display:none;cursor:pointer;margin-bottom:16px;background:var(--amber-l);color:#92400e;border-radius:var(--r);padding:12px 16px;font-size:13px;font-weight:500"></div>
       <div class="pl-g2" style="margin-bottom:16px">
         <div class="card" style="margin-bottom:0">
-          <p class="section-lbl">Forecast vs cuota ${ANIO_CUOTA}</p>
+          <p class="section-lbl" id="lbl-dona">Forecast vs cuota ${ANIO_CUOTA}</p>
           <div style="height:230px;position:relative"><canvas id="ch-forecast"></canvas></div>
         </div>
         <div class="card" style="margin-bottom:0">
@@ -333,7 +360,7 @@ function pintarEstructura() {
       </div>
       <div class="pl-g2" style="margin-bottom:16px">
         <div class="card" style="margin-bottom:0">
-          <p class="section-lbl">Ganado vs Perdido por mes (${ANIO_CUOTA})</p>
+          <p class="section-lbl" id="lbl-gvp">Ganado vs Perdido por mes (${ANIO_CUOTA})</p>
           <div style="height:200px;position:relative"><canvas id="ch-gvp"></canvas></div>
         </div>
         <div class="card" style="margin-bottom:0">
@@ -341,8 +368,25 @@ function pintarEstructura() {
           <div style="height:200px;position:relative"><canvas id="ch-motivos"></canvas></div>
         </div>
       </div>
+      <div class="pl-g2" style="margin-bottom:16px">
+        <div class="card" style="margin-bottom:0">
+          <p class="section-lbl">Retail vs Corporativo (canal)</p>
+          <div style="height:200px;position:relative"><canvas id="ch-canal"></canvas></div>
+          <div class="hint" id="sum-canal" style="margin:10px 0 0"></div>
+        </div>
+        <div class="card" style="margin-bottom:0">
+          <p class="section-lbl">Origen de las oportunidades (CRM, Broker...)</p>
+          <div style="height:200px;position:relative"><canvas id="ch-origen"></canvas></div>
+          <div class="hint" id="sum-origen" style="margin:10px 0 0"></div>
+        </div>
+      </div>
+      <div class="card">
+        <p class="section-lbl">Top brokers — valor de sus oportunidades (clic en un broker para verlas)</p>
+        <div style="height:220px;position:relative"><canvas id="ch-brokers"></canvas></div>
+        <div class="lista-vacia" id="brokers-vacio" style="display:none">Sin oportunidades con broker registrado en esta selección</div>
+      </div>
       <div class="card" id="dash-cuotas-card">
-        <p class="section-lbl">Avance de cuota por rep (Ganado ${ANIO_CUOTA})</p>
+        <p class="section-lbl" id="lbl-cuotas">Avance de cuota por rep (Ganado ${ANIO_CUOTA})</p>
         <div id="dash-cuotas"></div>
       </div>
     </div>
@@ -450,6 +494,30 @@ function pintarEstructura() {
         </div>
       </div>
     </div>
+
+    <!-- MODAL DE CUOTAS (solo Gerencia) -->
+    <div class="modal-overlay" id="ct-modal">
+      <div class="modal-box" style="max-width:540px">
+        <div class="modal-hdr">
+          <span class="modal-title">⚙️ Cuotas del equipo</span>
+          <button class="modal-close" id="ct-cerrar">×</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-group" style="max-width:150px;margin-bottom:14px">
+            <label class="form-label">Año de cuota</label>
+            <input class="form-input" id="ct-anio" type="number" min="2020" max="2100"/>
+          </div>
+          <label class="form-label" style="display:block;margin-bottom:8px">Cuota por representante (COP)</label>
+          <div id="ct-filas"></div>
+          <button class="btn-secundario" id="ct-agregar" style="margin-top:10px;font-size:12px;padding:7px 12px">＋ Agregar rep</button>
+          <div class="login-error" id="ct-error"></div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn-secundario" id="ct-cancelar">Cancelar</button>
+          <button class="btn-primario" id="ct-guardar">💾 Guardar cuotas</button>
+        </div>
+      </div>
+    </div>
   `;
 
   // Sub-pestañas
@@ -472,6 +540,20 @@ function pintarEstructura() {
   $("pl-btn-cancelar").addEventListener("click", cerrarModal);
   $("pl-btn-guardar").addEventListener("click", guardar);
   $("pl-btn-eliminar").addEventListener("click", eliminar);
+
+  // Modal de cuotas (solo Gerencia)
+  if (esAdmin()) {
+    $("pl-btn-cuotas").addEventListener("click", abrirModalCuotas);
+    $("ct-cerrar").addEventListener("click", () => $("ct-modal").classList.remove("open"));
+    $("ct-cancelar").addEventListener("click", () => $("ct-modal").classList.remove("open"));
+    $("ct-agregar").addEventListener("click", () => {
+      $("ct-filas").insertAdjacentHTML("beforeend", ctFila("", ""));
+    });
+    $("ct-filas").addEventListener("click", (e) => {
+      if (e.target.classList.contains("ct-quitar")) e.target.closest(".ct-fila").remove();
+    });
+    $("ct-guardar").addEventListener("click", guardarCuotasUI);
+  }
 
   // Eventos de filtros
   $("pl-f-texto").addEventListener("input", (e) => { filtros.texto = e.target.value.toLowerCase(); render(); });
@@ -506,6 +588,16 @@ function mostrarSub(nombre) {
 
 function actualizarOpcionesFiltros() {
   actualizarMultiselects();
+
+  // El selector de Rep del formulario (Gerencia) incluye a todo
+  // rep con cuota: agregar un rep en ⚙️ Cuotas lo habilita aquí.
+  const selRepForm = $("pl-c-rep");
+  if (selRepForm && esAdmin()) {
+    const actualRep = selRepForm.value;
+    const nombres = [...new Set([...REPS_BASE, ...Object.keys(CUOTAS)])].sort((a, b) => a.localeCompare(b, "es"));
+    selRepForm.innerHTML = `<option value="">Seleccionar...</option>` +
+      nombres.map(r => `<option ${r === actualRep ? "selected" : ""}>${esc(r)}</option>`).join("");
+  }
 
   const dl = (id, campo) => { const el = $(id); if (el) el.innerHTML = valoresUnicos(campo).map(v => `<option value="${esc(v)}">`).join(""); };
   dl("pl-dl-tipo", "tipo"); dl("pl-dl-canal", "canal"); dl("pl-dl-origen", "origen");
@@ -793,6 +885,119 @@ function renderDashboard() {
       plugins: { legend: { position: "right", labels: { boxWidth: 10, font: { size: 11 } } } }
     }
   });
+
+  // ── Retail vs Corporativo (campo canal), sobre el universo filtrado ──
+  const PALETA_EXTRA = ["#7c3aed", "#0d9488", "#dc2626", "#16a34a", "#6b7280", "#b45309"];
+  const bucketsCanal = {};
+  propios.forEach(d => {
+    const crudo = String(d.canal || "").trim();
+    const clave = crudo.toLowerCase() === "retail" ? "Retail"
+      : crudo.toLowerCase() === "corporativo" ? "Corporativo"
+      : (crudo || "Sin canal");
+    const b = bucketsCanal[clave] = bucketsCanal[clave] || { n: 0, v: 0, crudos: new Set() };
+    b.n++; b.v += parseFloat(d.valor) || 0;
+    if (crudo) b.crudos.add(crudo);
+  });
+  const canalLabels = Object.keys(bucketsCanal).sort((a, b) => bucketsCanal[b].v - bucketsCanal[a].v);
+  const CANAL_COLORS = { "Retail": "#d97706", "Corporativo": "#2563EB", "Sin canal": "#9b9b96" };
+  mkChart("ch-canal", {
+    type: "doughnut",
+    data: {
+      labels: canalLabels,
+      datasets: [{ data: canalLabels.map(k => bucketsCanal[k].v),
+        backgroundColor: canalLabels.map((k, i) => CANAL_COLORS[k] || PALETA_EXTRA[i % PALETA_EXTRA.length]), borderWidth: 0 }]
+    },
+    options: {
+      cutout: "60%", responsive: true, maintainAspectRatio: false,
+      onClick: (evt, elems) => {
+        if (!elems.length) return;
+        const k = canalLabels[elems[0].index];
+        const crudos = [...bucketsCanal[k].crudos];
+        if (!crudos.length) return;
+        filtros.canal = new Set(crudos);
+        actualizarMultiselects(); render(); mostrarSub("tabla");
+      },
+      plugins: {
+        legend: { position: "right", labels: { boxWidth: 10, font: { size: 11 } } },
+        tooltip: { callbacks: { label: (c2) => `${c2.label}: ${fmtFull(c2.raw)} · ${bucketsCanal[c2.label].n} ops` } }
+      }
+    }
+  });
+  $("sum-canal").innerHTML = canalLabels.map(k =>
+    `<b>${esc(k)}</b>: ${bucketsCanal[k].n} ops · ${fmt(bucketsCanal[k].v)}`).join(" &nbsp;·&nbsp; ");
+
+  // ── Origen de llegada (CRM, Broker, Agenda Comercial...) ──
+  const bucketsOrigen = {};
+  propios.forEach(d => {
+    const crudo = String(d.origen || "").trim();
+    const clave = crudo || "Sin origen";
+    const b = bucketsOrigen[clave] = bucketsOrigen[clave] || { n: 0, v: 0 };
+    b.n++; b.v += parseFloat(d.valor) || 0;
+  });
+  const origenLabels = Object.keys(bucketsOrigen).sort((a, b) => bucketsOrigen[b].v - bucketsOrigen[a].v);
+  mkChart("ch-origen", {
+    type: "doughnut",
+    data: {
+      labels: origenLabels,
+      datasets: [{ data: origenLabels.map(k => bucketsOrigen[k].v),
+        backgroundColor: origenLabels.map((k, i) => k === "Sin origen" ? "#9b9b96" : ["#2563EB", "#16a34a", "#7c3aed", "#d97706", "#dc2626", "#0d9488", "#b45309"][i % 7]), borderWidth: 0 }]
+    },
+    options: {
+      cutout: "60%", responsive: true, maintainAspectRatio: false,
+      onClick: (evt, elems) => {
+        if (!elems.length) return;
+        const k = origenLabels[elems[0].index];
+        if (k === "Sin origen") return;
+        filtros.origen = new Set([k]);
+        actualizarMultiselects(); render(); mostrarSub("tabla");
+      },
+      plugins: {
+        legend: { position: "right", labels: { boxWidth: 10, font: { size: 11 } } },
+        tooltip: { callbacks: { label: (c2) => `${c2.label}: ${fmtFull(c2.raw)} · ${bucketsOrigen[c2.label].n} ops` } }
+      }
+    }
+  });
+  $("sum-origen").innerHTML = origenLabels.map(k =>
+    `<b>${esc(k)}</b>: ${bucketsOrigen[k].n} ops · ${fmt(bucketsOrigen[k].v)}`).join(" &nbsp;·&nbsp; ");
+
+  // ── Top brokers por valor (con clic para ver sus oportunidades) ──
+  const brokers = {};
+  propios.forEach(d => {
+    const nom = String(d.broker || "").trim();
+    if (!nom) return;
+    const x = brokers[nom] = brokers[nom] || { n: 0, v: 0 };
+    x.n++; x.v += parseFloat(d.valor) || 0;
+  });
+  const brokerLabels = Object.keys(brokers).sort((a, b) => brokers[b].v - brokers[a].v).slice(0, 8);
+  const hayBrokers = brokerLabels.length > 0;
+  const vacioBk = $("brokers-vacio");
+  if (vacioBk) vacioBk.style.display = hayBrokers ? "none" : "block";
+  if (hayBrokers) {
+    mkChart("ch-brokers", {
+      type: "bar",
+      data: {
+        labels: brokerLabels.map(b => b.length > 18 ? b.slice(0, 17) + "…" : b),
+        datasets: [{ data: brokerLabels.map(b => brokers[b].v), backgroundColor: "#0d9488", borderRadius: 4 }]
+      },
+      options: {
+        indexAxis: "y", responsive: true, maintainAspectRatio: false,
+        onClick: (evt, elems) => {
+          if (!elems.length) return;
+          const nombre = brokerLabels[elems[0].index];
+          filtros.texto = nombre.toLowerCase();
+          $("pl-f-texto").value = nombre;
+          render(); mostrarSub("tabla");
+        },
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: { label: (c2) => `${fmtFull(c2.raw)} · ${brokers[brokerLabels[c2.dataIndex]].n} ops` } }
+        },
+        scales: { x: { ticks: { callback: v => fmt(v) } }, y: { grid: { display: false } } }
+      }
+    });
+  } else if (charts["ch-brokers"]) {
+    charts["ch-brokers"].destroy(); delete charts["ch-brokers"];
+  }
 }
 
 // ═══════════════════════════════════════════
@@ -977,4 +1182,62 @@ async function eliminar() {
   const res = await eliminarDeal(editandoId);
   if (res.ok) { cerrarModal(); toast("🗑 Oportunidad eliminada"); }
   else $("pl-modal-error").textContent = res.error;
+}
+
+// ═══════════════════════════════════════════
+// ⚙️ MODAL DE CUOTAS (solo Gerencia)
+// ═══════════════════════════════════════════
+function ctFila(nombre, valor) {
+  return `<div class="ct-fila" style="display:flex;gap:8px;margin-bottom:8px;align-items:center">
+    <input class="form-input ct-nombre" style="flex:1;min-width:0" placeholder="Nombre del rep" value="${esc(nombre)}"/>
+    <input class="form-input ct-valor" style="width:160px" type="number" min="0" step="1000000" placeholder="Cuota (COP)" value="${valor ?? ""}"/>
+    <button class="btn-editar ct-quitar" type="button" title="Quitar rep" aria-label="Quitar rep">✕</button>
+  </div>`;
+}
+
+function abrirModalCuotas() {
+  $("ct-error").textContent = "";
+  $("ct-anio").value = ANIO_CUOTA;
+  const nombres = Object.keys(CUOTAS).sort((a, b) => a.localeCompare(b, "es"));
+  $("ct-filas").innerHTML = nombres.map(n => ctFila(n, CUOTAS[n])).join("");
+  $("ct-modal").classList.add("open");
+}
+
+async function guardarCuotasUI() {
+  const err = $("ct-error");
+  err.textContent = "";
+
+  const anio = parseInt($("ct-anio").value);
+  if (isNaN(anio) || anio < 2020 || anio > 2100) {
+    err.textContent = "Indica un año de cuota válido (ej: 2026).";
+    return;
+  }
+
+  const valores = {};
+  let problema = "";
+  $("ct-filas").querySelectorAll(".ct-fila").forEach(fila => {
+    const nombre = fila.querySelector(".ct-nombre").value.trim();
+    const cuota = parseFloat(fila.querySelector(".ct-valor").value);
+    if (!nombre) return; // filas vacías se ignoran
+    if (valores[nombre] !== undefined) problema = `El rep "${nombre}" está repetido.`;
+    if (isNaN(cuota) || cuota < 0) problema = `La cuota de "${nombre}" no es válida.`;
+    valores[nombre] = Math.round(cuota);
+  });
+  if (problema) { err.textContent = problema; return; }
+  if (Object.keys(valores).length === 0) {
+    err.textContent = "Agrega al menos un rep con su cuota.";
+    return;
+  }
+
+  const btn = $("ct-guardar");
+  btn.disabled = true; btn.textContent = "Guardando...";
+  const res = await guardarCuotas(anio, valores);
+  btn.disabled = false; btn.textContent = "💾 Guardar cuotas";
+
+  if (res.ok) {
+    $("ct-modal").classList.remove("open");
+    toast("✓ Cuotas actualizadas — el dashboard ya las refleja");
+  } else {
+    err.textContent = res.error;
+  }
 }
