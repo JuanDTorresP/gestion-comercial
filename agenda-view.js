@@ -199,7 +199,8 @@ function pintarEstructura() {
       .ag-notas{font-size:12px;color:var(--txt2);margin-top:6px;background:var(--s2);border-radius:8px;padding:8px 10px}
       .ag-rep-tag{font-size:11px;font-weight:600;color:var(--txt2)}
       .pl-g2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
-      @media(max-width:820px){.pl-g2{grid-template-columns:1fr}.ag-hora{width:44px}}
+      .ag-g3{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+      @media(max-width:820px){.pl-g2{grid-template-columns:1fr}.ag-g3{grid-template-columns:1fr}.ag-hora{width:44px}}
       .m-card.clic{cursor:pointer;transition:box-shadow .15s,transform .15s,border-color .15s}
       .m-card.clic:hover{box-shadow:0 4px 14px rgba(0,0,0,.10);transform:translateY(-2px)}
       .m-card.clic.activa{border:2px solid var(--blue);box-shadow:0 0 0 3px var(--blue-l)}
@@ -256,7 +257,7 @@ function pintarEstructura() {
       <button class="ag-subtab ${esAdmin() ? "active" : ""}" id="ag-st-sem">🗓 Semana actual</button>
       ${esAdmin() ? `<button class="ag-subtab" id="ag-st-eq">👥 Equipo</button>` : ""}
       <button class="ag-subtab" id="ag-st-mes">📊 Reporte mensual</button>
-      <button class="ag-subtab" id="ag-st-cmp">🔁 Comparar meses</button>
+      <button class="ag-subtab" id="ag-st-cmp">📈 Evolución mensual</button>
     </div>
 
     <!-- ═══ MI AGENDA (solo reps: únicamente SUS gestiones) ═══ -->
@@ -307,6 +308,23 @@ function pintarEstructura() {
           <div style="height:190px;position:relative"><canvas id="ag-ch-etapas"></canvas></div>
         </div>
       </div>
+      <div class="ag-g3" style="margin-bottom:16px">
+        <div class="card" style="margin-bottom:0">
+          <p class="section-lbl">Tipo de gestión</p>
+          <div style="height:145px;position:relative"><canvas id="ag-ch-tipo"></canvas></div>
+          <div class="hint" id="sum-tipo" style="margin:8px 0 0"></div>
+        </div>
+        <div class="card" style="margin-bottom:0">
+          <p class="section-lbl">Modalidad</p>
+          <div style="height:145px;position:relative"><canvas id="ag-ch-mod"></canvas></div>
+          <div class="hint" id="sum-mod" style="margin:8px 0 0"></div>
+        </div>
+        <div class="card" style="margin-bottom:0">
+          <p class="section-lbl">Tipo de cliente</p>
+          <div style="height:145px;position:relative"><canvas id="ag-ch-cli"></canvas></div>
+          <div class="hint" id="sum-cli" style="margin:8px 0 0"></div>
+        </div>
+      </div>
       <div class="filtros-bar">
         <input class="filtro-input" id="ag-f-texto" placeholder="🔍 Buscar cuenta, oportunidad o ciudad..."/>
         <select class="filtro-select" id="ag-f-mes"><option value="">Mes: Todos</option></select>
@@ -336,15 +354,23 @@ function pintarEstructura() {
       <div class="card" id="ag-lista"></div>
     </div>
 
-    <!-- ═══ COMPARAR MESES ═══ -->
+    <!-- ═══ EVOLUCIÓN MENSUAL ═══ -->
     <div id="ag-sub-cmp" style="display:none">
-      <div class="filtros-bar">
-        <select class="filtro-select" id="cmp-a"></select>
-        <span style="font-size:13px;color:var(--txt3)">vs</span>
-        <select class="filtro-select" id="cmp-b"></select>
+      <div class="card">
+        <p class="section-lbl">Evolución mes a mes — comerciales, operativas y clientes nuevos (clic en un mes abre su reporte)</p>
+        <div style="height:240px;position:relative"><canvas id="evo-ch"></canvas></div>
       </div>
       <div class="card">
-        <p class="section-lbl">Comparativo</p>
+        <p class="section-lbl">Cuentas únicas y visitas presenciales por mes</p>
+        <div style="height:200px;position:relative"><canvas id="evo-ch2"></canvas></div>
+      </div>
+      <div class="card">
+        <p class="section-lbl">Comparar dos meses en detalle</p>
+        <div class="filtros-bar" style="margin-top:10px">
+          <select class="filtro-select" id="cmp-a"></select>
+          <span style="font-size:13px;color:var(--txt3)">vs</span>
+          <select class="filtro-select" id="cmp-b"></select>
+        </div>
         <table class="cmp-tbl" id="cmp-tabla"></table>
       </div>
       <div class="card">
@@ -635,6 +661,7 @@ function render() {
   renderEquipo();
   renderSemana();
   renderMensual();
+  renderEvolucion();
   renderComparar();
 }
 
@@ -1066,6 +1093,40 @@ function renderMensual() {
     }
   });
 
+  // ── Indicadores de composición (donas con % y clic para filtrar) ──
+  const donaMini = (canvasId, sumId, items, alClic) => {
+    const conDatos = items.filter(i => i.n > 0);
+    const labels = conDatos.map(i => i.label);
+    mkChart(canvasId, {
+      type: "doughnut",
+      data: { labels, datasets: [{ data: conDatos.map(i => i.n), backgroundColor: conDatos.map(i => i.color), borderWidth: 0 }] },
+      options: {
+        cutout: "62%", responsive: true, maintainAspectRatio: false,
+        onClick: (evt, elems) => { if (elems.length && alClic) alClic(labels[elems[0].index]); },
+        plugins: { legend: { position: "right", labels: { boxWidth: 10, font: { size: 11 } } } }
+      }
+    });
+    const tot = items.reduce((s, i) => s + i.n, 0) || 1;
+    const el = $(sumId);
+    if (el) el.innerHTML = items.map(i =>
+      `<b>${esc(i.label)}</b>: ${i.n} (${Math.round(i.n / tot * 100)}%)`).join(" &nbsp;·&nbsp; ");
+  };
+  donaMini("ag-ch-tipo", "sum-tipo", [
+    { label: "Comercial", n: comerciales.length, color: "#2563EB" },
+    { label: "Operativo", n: operativas.length, color: "#9b9b96" }
+  ], (l) => { filtros.tipo = filtros.tipo === l ? "" : l; $("ag-f-tipo").value = filtros.tipo; renderMensual(); });
+  const modPres = visibles.filter(g => g.modalidad === "Presencial").length;
+  const modVirt = visibles.filter(g => g.modalidad === "Virtual").length;
+  donaMini("ag-ch-mod", "sum-mod", [
+    { label: "Presencial", n: modPres, color: "#d97706" },
+    { label: "Virtual", n: modVirt, color: "#0d9488" }
+  ], (l) => { filtros.modalidad = filtros.modalidad === l ? "" : l; $("ag-f-modalidad").value = filtros.modalidad; renderMensual(); });
+  const cliExist = visibles.filter(g => g.tipoCliente === "Existente").length;
+  donaMini("ag-ch-cli", "sum-cli", [
+    { label: "Nuevo", n: clientesNuevos, color: "#7c3aed" },
+    { label: "Existente", n: cliExist, color: "#16a34a" }
+  ], (l) => { filtros.tipoCliente = filtros.tipoCliente === l ? "" : l; renderMensual(); });
+
   $("ag-conteo").textContent = `${visibles.length} gestión(es)` +
     (filtros.tipoCliente === "Nuevo" ? " · solo clientes nuevos" : "");
 
@@ -1085,6 +1146,69 @@ function renderMensual() {
     </div>`;
   }).join("");
   activarBotonesEditar($("ag-lista"));
+}
+
+// ═══════════════════════════════════════════
+// 📈 EVOLUCIÓN MENSUAL (todos los meses en gráficas)
+// ═══════════════════════════════════════════
+function renderEvolucion() {
+  if (!$("evo-ch")) return;
+  const meses = mesesEnDatos().slice().sort(); // cronológico
+  const base = baseGestiones();
+  const datos = meses.map(m => {
+    const del = base.filter(g => mesDe(g) === m);
+    return {
+      com: del.filter(g => g.tipo === "Comercial").length,
+      ope: del.filter(g => g.tipo === "Operativo").length,
+      nue: del.filter(g => g.tipoCliente === "Nuevo").length,
+      cta: new Set(del.map(g => String(g.cuenta || "").trim()).filter(Boolean)).size,
+      pre: del.filter(g => g.modalidad === "Presencial").length
+    };
+  });
+  const etiq = meses.map(m => {
+    const [a, mm] = m.split("-");
+    return MESES_NOMBRE[parseInt(mm) - 1].slice(0, 3) + " " + a.slice(2);
+  });
+
+  mkChart("evo-ch", {
+    data: {
+      labels: etiq,
+      datasets: [
+        { type: "bar", label: "Comerciales", data: datos.map(d => d.com), backgroundColor: "#2563EB", stack: "g", borderRadius: 4 },
+        { type: "bar", label: "Operativas", data: datos.map(d => d.ope), backgroundColor: "#9b9b96", stack: "g", borderRadius: 4 },
+        { type: "line", label: "Clientes nuevos", data: datos.map(d => d.nue), borderColor: "#d97706", backgroundColor: "#d97706", stack: "linea", tension: 0.3, pointRadius: 3 }
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      onClick: (evt, elems) => {
+        if (!elems.length) return;
+        const m = meses[elems[0].index];
+        filtros.mes = m;
+        $("ag-f-mes").value = m;
+        renderMensual();
+        mostrarSub("mes");
+      },
+      plugins: { legend: { position: "top", labels: { boxWidth: 10, font: { size: 11 } } } },
+      scales: { x: { stacked: true, grid: { display: false } }, y: { stacked: true, ticks: { precision: 0 } } }
+    }
+  });
+
+  mkChart("evo-ch2", {
+    type: "line",
+    data: {
+      labels: etiq,
+      datasets: [
+        { label: "Cuentas únicas", data: datos.map(d => d.cta), borderColor: "#7c3aed", backgroundColor: "#7c3aed", tension: 0.3, pointRadius: 3 },
+        { label: "Presenciales", data: datos.map(d => d.pre), borderColor: "#0d9488", backgroundColor: "#0d9488", tension: 0.3, pointRadius: 3 }
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { position: "top", labels: { boxWidth: 10, font: { size: 11 } } } },
+      scales: { x: { grid: { display: false } }, y: { ticks: { precision: 0 } } }
+    }
+  });
 }
 
 // ═══════════════════════════════════════════
