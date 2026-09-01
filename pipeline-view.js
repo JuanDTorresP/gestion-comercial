@@ -337,6 +337,7 @@ function pintarEstructura() {
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         ${esAdmin() ? `<button class="btn-secundario" id="pl-btn-cuotas">⚙️ Cuotas</button>` : ""}
+        <button class="btn-secundario" id="pl-btn-masiva">⚡ Carga masiva</button>
         <button class="btn-primario" id="pl-btn-nueva">＋ Nueva oportunidad</button>
       </div>
     </div>
@@ -344,6 +345,7 @@ function pintarEstructura() {
     <div class="pl-subtabs">
       <button class="pl-subtab active" id="pl-st-dash">📈 Dashboard</button>
       <button class="pl-subtab" id="pl-st-tabla">📋 Oportunidades</button>
+      <button class="pl-subtab" id="pl-st-ctas">🏢 Cuentas</button>
     </div>
 
     <!-- FILTROS GLOBALES: aplican al Dashboard Y a Oportunidades -->
@@ -453,6 +455,27 @@ function pintarEstructura() {
       </div>
     </div>
 
+    <!-- ═══ SUB-VISTA: CUENTAS (consolidado por cliente) ═══ -->
+    <div id="pl-sub-ctas" style="display:none">
+      <div class="m-grid" id="ctas-metricas"></div>
+      <p class="hint">💡 Haz clic en una cuenta para ver sus oportunidades. La lista respeta los filtros globales.</p>
+      <div class="card" style="padding:0 16px 8px">
+        <div class="tbl-wrap">
+          <table class="tbl">
+            <thead><tr>
+              <th>Cuenta</th>
+              <th style="text-align:right">Oportunidades</th>
+              <th style="text-align:right">Valor total</th>
+              <th style="text-align:right">Pipeline activo</th>
+              <th style="text-align:right">Esperado</th>
+              <th style="text-align:right">Ganado</th>
+            </tr></thead>
+            <tbody id="ctas-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
     <!-- MODAL CREAR/EDITAR -->
     <div class="modal-overlay" id="pl-modal">
       <div class="modal-box">
@@ -465,7 +488,8 @@ function pintarEstructura() {
             <div class="form-group full"><label class="form-label">Oportunidad *</label>
               <input class="form-input" id="pl-c-oportunidad" placeholder="Nombre de la oportunidad"/></div>
             <div class="form-group full"><label class="form-label">Cuenta / Cliente *</label>
-              <input class="form-input" id="pl-c-cuenta" placeholder="Nombre del cliente"/></div>
+              <input class="form-input" id="pl-c-cuenta" list="pl-dl-cuenta" placeholder="Nombre del cliente"/>
+              <datalist id="pl-dl-cuenta"></datalist></div>
             <div class="form-group"><label class="form-label">Rep *</label>
               <select class="form-select" id="pl-c-rep"></select></div>
             <div class="form-group"><label class="form-label">Estado *</label>
@@ -550,11 +574,40 @@ function pintarEstructura() {
         </div>
       </div>
     </div>
+
+    <!-- MODAL CARGA MASIVA DE OPORTUNIDADES -->
+    <div class="modal-overlay" id="ml-modal">
+      <div class="modal-box" style="max-width:960px">
+        <div class="modal-hdr">
+          <span class="modal-title">⚡ Carga masiva de oportunidades</span>
+          <button class="modal-close" id="ml-cerrar">×</button>
+        </div>
+        <div class="modal-body">
+          ${esAdmin() ? `
+          <div class="form-group" style="max-width:280px;margin-bottom:12px">
+            <label class="form-label">Rep para todas las filas *</label>
+            <select class="form-select" id="ml-rep"></select>
+          </div>` : ""}
+          <div style="display:grid;grid-template-columns:2fr 2fr 1.2fr 1.1fr .7fr 1.1fr 34px;gap:8px;font-size:10px;font-weight:700;color:var(--txt3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px">
+            <span>Oportunidad *</span><span>Cuenta *</span><span>Estado</span><span>Valor (COP) *</span><span>Prob %</span><span>Mes rad.</span><span></span>
+          </div>
+          <div id="ml-filas"></div>
+          <button class="btn-secundario" id="ml-agregar" style="margin-top:10px;font-size:12px;padding:7px 12px">＋ Agregar fila</button>
+          <div class="login-error" id="ml-error"></div>
+        </div>
+        <div class="modal-footer">
+          <span class="filtro-conteo" id="ml-conteo" style="margin-right:auto"></span>
+          <button class="btn-secundario" id="ml-cancelar">Cancelar</button>
+          <button class="btn-primario" id="ml-guardar">💾 Crear oportunidades</button>
+        </div>
+      </div>
+    </div>
   `;
 
   // Sub-pestañas
   $("pl-st-dash").addEventListener("click", () => mostrarSub("dash"));
   $("pl-st-tabla").addEventListener("click", () => mostrarSub("tabla"));
+  $("pl-st-ctas").addEventListener("click", () => mostrarSub("ctas"));
 
   // Rep del formulario: un vendedor solo puede elegirse a sí mismo
   const selRep = $("pl-c-rep");
@@ -587,6 +640,22 @@ function pintarEstructura() {
     $("ct-guardar").addEventListener("click", guardarCuotasUI);
   }
 
+  // Carga masiva (todos los roles)
+  $("pl-btn-masiva").addEventListener("click", abrirModalMasiva);
+  $("ml-cerrar").addEventListener("click", () => $("ml-modal").classList.remove("open"));
+  $("ml-cancelar").addEventListener("click", () => $("ml-modal").classList.remove("open"));
+  $("ml-agregar").addEventListener("click", () => {
+    $("ml-filas").insertAdjacentHTML("beforeend", mlFila());
+    actualizarConteoML();
+  });
+  $("ml-filas").addEventListener("click", (e) => {
+    if (e.target.classList.contains("ml-quitar")) {
+      e.target.closest(".ml-fila").remove();
+      actualizarConteoML();
+    }
+  });
+  $("ml-guardar").addEventListener("click", guardarMasiva);
+
   // Eventos de filtros
   $("pl-f-texto").addEventListener("input", (e) => { filtros.texto = e.target.value.toLowerCase(); render(); });
   iniciarMultiselects();
@@ -614,8 +683,10 @@ function pintarEstructura() {
 function mostrarSub(nombre) {
   $("pl-st-dash").classList.toggle("active", nombre === "dash");
   $("pl-st-tabla").classList.toggle("active", nombre === "tabla");
+  $("pl-st-ctas").classList.toggle("active", nombre === "ctas");
   $("pl-sub-dash").style.display = nombre === "dash" ? "block" : "none";
   $("pl-sub-tabla").style.display = nombre === "tabla" ? "block" : "none";
+  $("pl-sub-ctas").style.display = nombre === "ctas" ? "block" : "none";
 }
 
 function actualizarOpcionesFiltros() {
@@ -632,7 +703,7 @@ function actualizarOpcionesFiltros() {
   }
 
   const dl = (id, campo) => { const el = $(id); if (el) el.innerHTML = valoresUnicos(campo).map(v => `<option value="${esc(v)}">`).join(""); };
-  dl("pl-dl-tipo", "tipo"); dl("pl-dl-canal", "canal"); dl("pl-dl-origen", "origen");
+  dl("pl-dl-tipo", "tipo"); dl("pl-dl-canal", "canal"); dl("pl-dl-origen", "origen"); dl("pl-dl-cuenta", "cuenta");
   dl("pl-dl-segmento", "segmento"); dl("pl-dl-broker", "broker");
 }
 
@@ -642,6 +713,7 @@ function actualizarOpcionesFiltros() {
 function render() {
   renderDashboard();
   renderTabla();
+  renderCuentas();
 }
 
 // Salta a la pestaña Oportunidades con un filtro aplicado
@@ -1304,4 +1376,148 @@ async function guardarCuotasUI() {
   } else {
     err.textContent = res.error;
   }
+}
+
+// ═══════════════════════════════════════════
+// 🏢 VISTA DE CUENTAS (consolidado por cliente)
+// ═══════════════════════════════════════════
+function renderCuentas() {
+  const cont = $("ctas-tbody");
+  if (!cont) return;
+  const visibles = filtrarDeals();
+
+  const mapa = {};
+  visibles.forEach(d => {
+    const raw = String(d.cuenta || "").trim() || "(Sin cuenta)";
+    const k = raw.toLowerCase();
+    const m = mapa[k] = mapa[k] || { nombre: raw, n: 0, total: 0, activo: 0, esperado: 0, ganado: 0 };
+    const v = parseFloat(d.valor) || 0;
+    m.n++; m.total += v;
+    if (ESTADOS_ACTIVOS.has(d.estado)) { m.activo += v; m.esperado += esperadoDe(d); }
+    if (d.estado === "Ganado") m.ganado += v;
+  });
+  const lista = Object.values(mapa).sort((a, b) => b.total - a.total);
+  const multi = lista.filter(x => x.n > 1);
+
+  $("ctas-metricas").innerHTML = `
+    <div class="m-card"><div class="m-lbl">Cuentas</div>
+      <div class="m-val">${lista.length}</div>
+      <div class="m-sub">con los filtros actuales</div></div>
+    <div class="m-card"><div class="m-lbl">Con varias oportunidades</div>
+      <div class="m-val" style="color:var(--blue)">${multi.length}</div>
+      <div class="m-sub">2 o más oportunidades</div></div>
+    <div class="m-card"><div class="m-lbl">Valor total</div>
+      <div class="m-val" style="color:var(--purple)">${fmt(lista.reduce((s, x) => s + x.total, 0))}</div>
+      <div class="m-sub">suma de todas las cuentas</div></div>
+  `;
+
+  cont.innerHTML = lista.length === 0
+    ? `<tr><td colspan="6" class="lista-vacia">Sin cuentas con los filtros actuales</td></tr>`
+    : lista.map(x => `
+      <tr class="cta-row" data-cta="${esc(x.nombre)}" style="cursor:pointer">
+        <td><b>${esc(x.nombre)}</b></td>
+        <td style="text-align:right">${x.n}</td>
+        <td style="text-align:right" title="${fmtFull(x.total)}"><b>${fmt(x.total)}</b></td>
+        <td style="text-align:right">${fmt(x.activo)}</td>
+        <td style="text-align:right">${fmt(x.esperado)}</td>
+        <td style="text-align:right;color:var(--green)">${fmt(x.ganado)}</td>
+      </tr>`).join("");
+
+  cont.querySelectorAll(".cta-row").forEach(tr => {
+    tr.addEventListener("click", () => {
+      const nombre = tr.dataset.cta;
+      if (nombre === "(Sin cuenta)") return;
+      filtros.texto = nombre.toLowerCase();
+      $("pl-f-texto").value = nombre;
+      render();
+      mostrarSub("tabla");
+    });
+  });
+}
+
+// ═══════════════════════════════════════════
+// ⚡ CARGA MASIVA DE OPORTUNIDADES
+// ═══════════════════════════════════════════
+function mlFila() {
+  return `<div class="ml-fila" style="display:grid;grid-template-columns:2fr 2fr 1.2fr 1.1fr .7fr 1.1fr 34px;gap:8px;margin-bottom:8px;align-items:center">
+    <input class="form-input ml-opp" placeholder="Nombre de la oportunidad"/>
+    <input class="form-input ml-cta" list="pl-dl-cuenta" placeholder="Cliente"/>
+    <select class="form-select ml-est">${ESTADOS.map(e => `<option>${e}</option>`).join("")}</select>
+    <input class="form-input ml-val" type="number" min="0" placeholder="0"/>
+    <input class="form-input ml-pro" type="number" min="0" max="100" placeholder="50"/>
+    <select class="form-select ml-mes"><option value="">—</option>${MESES.map(m => `<option>${m}</option>`).join("")}</select>
+    <button class="btn-editar ml-quitar" type="button" title="Quitar fila" aria-label="Quitar fila">✕</button>
+  </div>`;
+}
+
+function actualizarConteoML() {
+  const n = $("ml-filas").querySelectorAll(".ml-fila").length;
+  $("ml-conteo").textContent = `${n} fila(s)`;
+}
+
+function abrirModalMasiva() {
+  $("ml-error").textContent = "";
+  const selRep = $("ml-rep");
+  if (selRep) {
+    const actual = selRep.value;
+    const nombres = [...new Set([...REPS_BASE, ...Object.keys(CUOTAS)])].sort((a, b) => a.localeCompare(b, "es"));
+    selRep.innerHTML = `<option value="">Seleccionar...</option>` +
+      nombres.map(r => `<option ${r === actual ? "selected" : ""}>${esc(r)}</option>`).join("");
+  }
+  $("ml-filas").innerHTML = mlFila() + mlFila() + mlFila();
+  actualizarConteoML();
+  $("ml-modal").classList.add("open");
+}
+
+async function guardarMasiva() {
+  const err = $("ml-error");
+  err.textContent = "";
+  const u = obtenerUsuario();
+  const rep = esAdmin() ? ($("ml-rep") ? $("ml-rep").value : "") : u.nombreRep;
+  if (!rep) { err.textContent = "Selecciona el rep para las filas."; return; }
+
+  const filas = [...$("ml-filas").querySelectorAll(".ml-fila")];
+  const porCrear = [];
+  for (let i = 0; i < filas.length; i++) {
+    const f = filas[i];
+    const opp = f.querySelector(".ml-opp").value.trim();
+    const cta = f.querySelector(".ml-cta").value.trim();
+    const est = f.querySelector(".ml-est").value;
+    const valStr = f.querySelector(".ml-val").value;
+    const proStr = f.querySelector(".ml-pro").value;
+    const mes = f.querySelector(".ml-mes").value;
+    if (!opp && !cta && !valStr) continue; // fila vacía: se ignora
+    const val = parseFloat(valStr);
+    if (!opp || !cta || isNaN(val)) {
+      err.textContent = `Fila ${i + 1}: completa Oportunidad, Cuenta y Valor.`;
+      return;
+    }
+    const proPct = proStr === "" ? 50 : Math.min(Math.max(parseFloat(proStr) || 0, 0), 100);
+    const prob = proPct / 100;
+    porCrear.push({
+      oportunidad: opp, cuenta: cta, rep, estado: est,
+      valor: val, prob, esperado: Math.round(val * prob),
+      mes_radicacion: mes, anio_radicacion: null,
+      tipo: "", canal: "", origen: "", riesgo: "", segmento: "", broker: "",
+      mes_inicio: "", motivo_perdida: "", comentarios: ""
+    });
+  }
+  if (!porCrear.length) { err.textContent = "No hay filas con datos para crear."; return; }
+
+  const btn = $("ml-guardar");
+  btn.disabled = true;
+  let creadas = 0;
+  for (const d of porCrear) {
+    btn.textContent = `Guardando ${creadas + 1}/${porCrear.length}...`;
+    const res = await crearDeal(d);
+    if (!res.ok) {
+      btn.disabled = false; btn.textContent = "💾 Crear oportunidades";
+      err.textContent = `Se crearon ${creadas}. Falló "${d.oportunidad}": ${res.error}`;
+      return;
+    }
+    creadas++;
+  }
+  btn.disabled = false; btn.textContent = "💾 Crear oportunidades";
+  $("ml-modal").classList.remove("open");
+  toast(`✓ ${creadas} oportunidad(es) creadas`);
 }
