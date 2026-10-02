@@ -1,12 +1,26 @@
 // ═══════════════════════════════════════════════════════════
-// pipeline-view.js — v3
-// Vista del Pipeline con dos sub-pestañas:
+// pipeline-view.js — v4
+// Vista del Pipeline con tres sub-pestañas:
 //   📈 Dashboard      → forecast vs cuota, embudo, pipeline por
-//                       mes y avance de cuota por rep (gráficas)
+//                       mes, top 10 cuentas y avance de cuota
 //   📋 Oportunidades  → filtros completos + tabla + formulario
+//   🏢 Cuentas        → consolidado por cliente
 //
 // Gerencia ve el dashboard del equipo completo; un vendedor ve
 // su propio dashboard (solo sus oportunidades y su cuota).
+//
+// Cambios v4 (oct 2026):
+//  1. Perdido → sale del pipeline activo y su valor esperado es 0
+//     (se guarda en 0 y además se fuerza en 0 al leer registros viejos).
+//  2. Dona "Origen": clic en una porción o en un ítem de la leyenda
+//     filtra TODO el dashboard por ese origen (clic de nuevo = quitar).
+//  3. Nueva gráfica "Top 10 cuentas" con el pipeline completo de cada
+//     cuenta, apilado por estado.
+//  4. Tipo: solo "Venta" o "Renta" (selector cerrado).
+//  5. Selector de año 2026 / 2027 / 2028: cada pantalla muestra
+//     ÚNICAMENTE las oportunidades de ese año de radicación.
+//  7. Pipeline activo = Identificado, Cotizado, En diseño, Negociación.
+//     On hold ya no suma (se muestra aparte, como referencia).
 // ═══════════════════════════════════════════════════════════
 
 import { obtenerUsuario, esAdmin } from "./auth-service.js";
@@ -28,11 +42,23 @@ const CUOTAS_DEFECTO = {
 let ANIO_CUOTA = 2026;
 let CUOTAS = { ...CUOTAS_DEFECTO };
 
-// ── Constantes de negocio (mismas del Pipeline viejo) ──
+// ── Años que se pueden consultar (una pantalla por año) ──
+const ANIOS_VISTA = [2026, 2027, 2028];
+let anioVista = 2026;
+
+// ── Constantes de negocio ──
 const ESTADOS = ["Identificado", "Cotizado", "En diseño", "Negociación", "On hold", "Ganado", "Perdido"];
-const ESTADOS_ACTIVOS = new Set(["Identificado", "Cotizado", "En diseño", "Negociación", "On hold"]);
-const ORDEN_EMBUDO = ["Identificado", "Cotizado", "En diseño", "Negociación", "On hold"];
-const COLORES_EMBUDO = ["#6d28d9", "#1d4ed8", "#0f766e", "#15803d", "#b45309"];
+// Pipeline activo: SOLO estas 4 etapas. "On hold" y "Perdido" NO suman.
+const ESTADOS_ACTIVOS = new Set(["Identificado", "Cotizado", "En diseño", "Negociación"]);
+const ORDEN_EMBUDO = ["Identificado", "Cotizado", "En diseño", "Negociación"];
+const COLORES_EMBUDO = ["#6d28d9", "#1d4ed8", "#0f766e", "#15803d"];
+const TIPOS = ["Venta", "Renta"];
+// Top 10 cuentas: todo el pipeline de la cuenta (menos Perdido), apilado por estado
+const TOP_ESTADOS = ["Identificado", "Cotizado", "En diseño", "Negociación", "Ganado", "On hold"];
+const TOP_COLORES = {
+  "Identificado": "#6d28d9", "Cotizado": "#1d4ed8", "En diseño": "#0f766e",
+  "Negociación": "#15803d", "Ganado": "#ca8a04", "On hold": "#cbd5e1"
+};
 const REPS_BASE = ["Patricia Lopera", "Clemencia Rodriguez", "Ivan Muñoz", "Johana Mayo"];
 const RIESGOS = ["Alto", "Medio", "Bajo"];
 const MOTIVOS_PERDIDA = ["Precio", "Producto", "Diseño", "Otra area", "tiempos", "Garantia", "Otros"];
@@ -59,10 +85,11 @@ let ordenCampo = "valor", ordenDir = -1;
 let charts = {};
 // Filtros de MULTISELECCIÓN: cada uno es un conjunto de valores marcados
 // (vacío = "Todos"). El texto de búsqueda sigue siendo libre.
+// "cuenta" es un filtro exacto (se activa desde el Top 10 o la pestaña Cuentas).
 const filtros = {
-  texto: "",
+  texto: "", cuenta: "",
   rep: new Set(), estado: new Set(), tipo: new Set(), canal: new Set(),
-  segmento: new Set(), origen: new Set(), riesgo: new Set(), mes: new Set(), anio: new Set()
+  segmento: new Set(), origen: new Set(), riesgo: new Set(), mes: new Set()
 };
 
 // ── Utilidades ──
@@ -105,13 +132,21 @@ function valoresUnicos(campo, base = []) {
   baseDeals().forEach(d => { const v = d[campo]; if (v !== undefined && v !== null && String(v).trim() !== "") set.add(String(v).trim()); });
   return [...set].sort((a, b) => String(a).localeCompare(String(b), "es"));
 }
-// Valor esperado de un deal (usa el guardado o lo calcula)
+// Valor esperado de un deal (usa el guardado o lo calcula).
+// Una oportunidad PERDIDA siempre vale 0 de esperado, aunque el
+// registro viejo en Firestore tenga otro número guardado.
 function esperadoDe(d) {
+  if (d.estado === "Perdido") return 0;
   const v = parseFloat(d.valor) || 0, p = parseFloat(d.prob) || 0;
   return (d.esperado != null && !isNaN(parseFloat(d.esperado))) ? parseFloat(d.esperado) : Math.round(v * p);
 }
-// ¿El registro cuenta para el año de cuota? (regla del Pipeline viejo:
-// sin año se asume del año en curso; otro año queda excluido)
+// Tipo normalizado: solo "Venta" o "Renta" ("" si el registro trae otra cosa)
+function tipoDe(d) {
+  const t = String(d.tipo || "").trim().toLowerCase();
+  if (t === "venta") return "Venta";
+  if (t === "renta" || t === "alquiler" || t === "arriendo") return "Renta";
+  return "";
+}
 // Clasifica la oportunidad como Retail o Corporativo leyendo
 // TANTO el campo canal como el campo segmento (el histórico
 // guarda este dato en cualquiera de los dos, con mayúsculas variadas).
@@ -129,10 +164,11 @@ function anioDe(d) {
   const n = parseInt(s.replace(/[^0-9]/g, ""), 10);
   return isNaN(n) ? null : n;
 }
-function esDelAnio(d) {
+// Año al que pertenece la oportunidad. Sin año registrado se asume
+// del año de cuota en curso (regla del Pipeline original).
+function anioEfectivo(d) {
   const a = anioDe(d);
-  // Sin año se asume del año en curso (regla del Pipeline original)
-  return a === null || a === ANIO_CUOTA;
+  return a === null ? ANIO_CUOTA : a;
 }
 function mkChart(id, cfg) {
   if (charts[id]) { charts[id].destroy(); delete charts[id]; }
@@ -157,8 +193,10 @@ export function iniciarPipeline() {
   // Estado limpio por sesión: sin esto, los filtros del usuario
   // anterior quedarían activos (invisibles) para el siguiente.
   filtros.texto = "";
+  filtros.cuenta = "";
   MS_DEFS.forEach(def => filtros[def.clave].clear());
   ordenCampo = "valor"; ordenDir = -1;
+  anioVista = ANIOS_VISTA.includes(ANIO_CUOTA) ? ANIO_CUOTA : ANIOS_VISTA[0];
   pintarEstructura();
   if (parar) parar();
   parar = suscribirDeals(
@@ -185,9 +223,12 @@ export function iniciarPipeline() {
 // Los títulos fijos que mencionan el año se refrescan si el año cambia
 function actualizarTitulosAnio() {
   const set = (id, txt) => { const el = $(id); if (el) el.textContent = txt; };
-  set("lbl-dona", `Forecast vs cuota ${ANIO_CUOTA}`);
-  set("lbl-gvp", `Ganado vs Perdido por mes (${ANIO_CUOTA})`);
-  set("lbl-cuotas", `Avance de cuota por rep (Ganado ${ANIO_CUOTA})`);
+  set("lbl-dona", `Forecast vs cuota ${anioVista}`);
+  set("lbl-gvp", `Ganado vs Perdido por mes (${anioVista})`);
+  set("lbl-cuotas", `Avance de cuota por rep (Ganado ${anioVista})`);
+  set("lbl-top10", `Top 10 cuentas — pipeline completo ${anioVista}`);
+  document.querySelectorAll(".pl-anio-tab").forEach(b =>
+    b.classList.toggle("active", parseInt(b.dataset.anio) === anioVista));
 }
 
 export function detenerPipeline() {
@@ -203,7 +244,11 @@ export function detenerPipeline() {
 const MS_DEFS = [
   { id: "ms-rep",    clave: "rep",    etiqueta: "Rep",      opciones: () => valoresUnicos("rep", REPS_BASE) },
   { id: "ms-estado", clave: "estado", etiqueta: "Estado",   opciones: () => ESTADOS.slice() },
-  { id: "ms-tipo",   clave: "tipo",   etiqueta: "Tipo",     opciones: () => valoresUnicos("tipo") },
+  { id: "ms-tipo",   clave: "tipo",   etiqueta: "Tipo",     opciones: () => {
+      const ops = TIPOS.slice();
+      if (baseDeals().some(d => !tipoDe(d))) ops.push("Sin tipo");
+      return ops;
+    } },
   { id: "ms-canal",  clave: "canal",  etiqueta: "Canal",    opciones: () => {
       const ops = valoresUnicos("canal");
       if (baseDeals().some(d => !String(d.canal || "").trim())) ops.push("Sin canal");
@@ -221,9 +266,9 @@ const MS_DEFS = [
       return ops;
     } },
   { id: "ms-riesgo", clave: "riesgo", etiqueta: "Riesgo",   opciones: () => valoresUnicos("riesgo") },
-  { id: "ms-mes",    clave: "mes",    etiqueta: "Mes rad.", opciones: () => MESES.filter(m => valoresUnicos("mes_radicacion").includes(m)) },
-  { id: "ms-anio",   clave: "anio",   etiqueta: "Año rad.", opciones: () => [...new Set(baseDeals().map(anioDe).filter(a => a !== null))].sort((a, b) => b - a).map(String) }
+  { id: "ms-mes",    clave: "mes",    etiqueta: "Mes rad.", opciones: () => MESES.filter(m => valoresUnicos("mes_radicacion").includes(m)) }
 ];
+// (El filtro "Año rad." se reemplazó por el selector 2026 / 2027 / 2028.)
 let msListo = false;
 
 function etiquetaMS(def) {
@@ -251,6 +296,8 @@ function actualizarMultiselects() {
     if (!cont) return;
     const set = filtros[def.clave];
     const ops = def.opciones();
+    // Un valor elegido desde una gráfica debe seguir visible en el desplegable
+    set.forEach(v => { if (!ops.includes(v)) ops.push(v); });
     const panel = cont.querySelector(".ms-panel");
     panel.innerHTML = ops.length
       ? ops.map((v, i) => `<label class="ms-opt"><input type="checkbox" data-i="${i}" ${set.has(v) ? "checked" : ""}/> ${esc(v)}</label>`).join("")
@@ -258,7 +305,9 @@ function actualizarMultiselects() {
     panel.querySelectorAll("input").forEach(chk => {
       chk.addEventListener("change", () => {
         const v = ops[parseInt(chk.dataset.i)];
-        if (chk.checked) set.add(v); else set.delete(v);
+        // Se lee el conjunto "en vivo": las gráficas pueden haberlo reemplazado
+        const actual = filtros[def.clave];
+        if (chk.checked) actual.add(v); else actual.delete(v);
         refrescarEtiquetaMS(def);
         render();
       });
@@ -287,6 +336,36 @@ function iniciarMultiselects() {
   }
 }
 
+// Clic en un origen (porción de la dona o leyenda) → filtra todo el
+// dashboard. Clic de nuevo sobre el mismo origen → quita el filtro.
+function toggleOrigen(origen) {
+  if (filtros.origen.size === 1 && filtros.origen.has(origen)) filtros.origen = new Set();
+  else filtros.origen = new Set([origen]);
+  actualizarMultiselects();
+  render();
+}
+
+// Chips con los filtros que vienen de las gráficas (origen y cuenta),
+// para que siempre se vea qué está filtrando y se quite en 1 clic.
+function renderChips() {
+  const cont = $("pl-chips");
+  if (!cont) return;
+  const chips = [];
+  filtros.origen.forEach(o => chips.push({ tipo: "origen", valor: o, txt: `Origen: ${o}` }));
+  if (filtros.cuenta) chips.push({ tipo: "cuenta", valor: filtros.cuenta, txt: `Cuenta: ${filtros.cuenta}` });
+  cont.style.display = chips.length ? "flex" : "none";
+  cont.innerHTML = chips.map((c, i) =>
+    `<button type="button" class="pl-chip" data-i="${i}" title="Quitar filtro">${esc(c.txt)} <span>✕</span></button>`).join("");
+  cont.querySelectorAll(".pl-chip").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const c = chips[parseInt(btn.dataset.i)];
+      if (c.tipo === "origen") { filtros.origen.delete(c.valor); actualizarMultiselects(); }
+      else filtros.cuenta = "";
+      render();
+    });
+  });
+}
+
 // ═══════════════════════════════════════════
 // ESTRUCTURA BASE
 // ═══════════════════════════════════════════
@@ -294,7 +373,19 @@ function pintarEstructura() {
   const u = obtenerUsuario();
   $("page-pipeline").innerHTML = `
     <style>
-      .pl-subtabs{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap}
+      .pl-subtabs{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;align-items:center}
+      .pl-anio-tabs{display:flex;gap:2px;margin-left:auto;background:var(--s2);border-radius:99px;padding:3px}
+      .pl-anio-tab{padding:5px 14px;border-radius:99px;border:none;background:none;font-size:12px;font-weight:600;cursor:pointer;color:var(--txt2);font-family:inherit}
+      .pl-anio-tab:hover{color:var(--txt)}
+      .pl-anio-tab.active{background:var(--surface);color:var(--txt);box-shadow:0 1px 3px rgba(0,0,0,.12)}
+      @media(max-width:820px){.pl-anio-tabs{margin-left:0}}
+      .pl-chips{display:none;gap:8px;flex-wrap:wrap;margin:-4px 0 12px}
+      .pl-chip{display:inline-flex;align-items:center;gap:6px;padding:5px 10px 5px 12px;border-radius:99px;border:1.5px solid var(--blue);background:var(--blue-l);color:#1d4ed8;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit}
+      .pl-chip span{font-size:11px;opacity:.7}
+      .pl-chip:hover span{opacity:1}
+      .funnel-hold{margin-top:14px;padding-top:12px;border-top:.5px dashed var(--border)}
+      .funnel-hold .funnel-fill{background:#e5e7eb;color:#6b7280}
+      .pl-hint-estado{font-size:11px;color:#b91c1c;margin-top:4px;display:none}
       .pl-subtab{padding:6px 14px;border-radius:99px;border:1.5px solid var(--border);background:var(--surface);font-size:12px;font-weight:600;cursor:pointer;color:var(--txt2);font-family:inherit}
       .pl-subtab:hover{border-color:var(--blue);color:var(--blue)}
       .pl-subtab.active{background:var(--blue);border-color:var(--blue);color:#fff}
@@ -346,6 +437,9 @@ function pintarEstructura() {
       <button class="pl-subtab active" id="pl-st-dash">📈 Dashboard</button>
       <button class="pl-subtab" id="pl-st-tabla">📋 Oportunidades</button>
       <button class="pl-subtab" id="pl-st-ctas">🏢 Cuentas</button>
+      <div class="pl-anio-tabs" id="pl-anio-tabs" title="Cada año muestra únicamente las oportunidades de ese año de radicación">
+        ${ANIOS_VISTA.map(a => `<button type="button" class="pl-anio-tab ${a === anioVista ? "active" : ""}" data-anio="${a}">${a}</button>`).join("")}
+      </div>
     </div>
 
     <!-- FILTROS GLOBALES: aplican al Dashboard Y a Oportunidades -->
@@ -361,19 +455,19 @@ function pintarEstructura() {
         <div class="ms" id="ms-origen"><button type="button" class="ms-btn">Origen: Todos</button><div class="ms-panel"></div></div>
         <div class="ms" id="ms-riesgo"><button type="button" class="ms-btn">Riesgo: Todos</button><div class="ms-panel"></div></div>
         <div class="ms" id="ms-mes"><button type="button" class="ms-btn">Mes rad.: Todos</button><div class="ms-panel"></div></div>
-        <div class="ms" id="ms-anio"><button type="button" class="ms-btn">Año rad.: Todos</button><div class="ms-panel"></div></div>
         <button class="btn-secundario" id="pl-f-limpiar" style="padding:7px 12px;font-size:12px">✕ Limpiar</button>
         <span class="filtro-conteo" id="pl-conteo"></span>
       </div>
+      <div class="pl-chips" id="pl-chips"></div>
 
     <!-- ═══ SUB-VISTA: DASHBOARD ═══ -->
     <div id="pl-sub-dash">
       <div class="m-grid" id="dash-cards"></div>
-      <p class="hint">💡 Haz clic en las tarjetas, el embudo, los motivos o las barras de cuota para ver esas oportunidades.</p>
+      <p class="hint">💡 Haz clic en las tarjetas, el embudo, los motivos o las barras de cuota para ver esas oportunidades. En la dona de Origen, clic en un origen filtra todo el dashboard.</p>
       <div id="dash-salud" style="display:none;cursor:pointer;margin-bottom:16px;background:var(--amber-l);color:#92400e;border-radius:var(--r);padding:12px 16px;font-size:13px;font-weight:500"></div>
       <div class="pl-g2" style="margin-bottom:16px">
         <div class="card" style="margin-bottom:0">
-          <p class="section-lbl" id="lbl-dona">Forecast vs cuota ${ANIO_CUOTA}</p>
+          <p class="section-lbl" id="lbl-dona">Forecast vs cuota ${anioVista}</p>
           <div style="height:230px;position:relative"><canvas id="ch-forecast"></canvas></div>
         </div>
         <div class="card" style="margin-bottom:0">
@@ -385,9 +479,15 @@ function pintarEstructura() {
         <p class="section-lbl">Forecast de radicación por mes — Ganado al 100% + esperado del activo (clic en un mes para ver sus oportunidades)</p>
         <div style="height:210px;position:relative"><canvas id="ch-meses"></canvas></div>
       </div>
+      <div class="card" style="margin-bottom:16px">
+        <p class="section-lbl" id="lbl-top10">Top 10 cuentas — pipeline completo ${anioVista}</p>
+        <p class="hint" style="margin:-6px 0 10px">Muestra todas las oportunidades de la cuenta por estado (sin Perdidas), ordenadas por activo + ganado. On hold se ve en gris como referencia: no suma. Clic en una cuenta para ver sus oportunidades.</p>
+        <div style="height:340px;position:relative"><canvas id="ch-top10"></canvas></div>
+        <div class="lista-vacia" id="top10-vacio" style="display:none">Sin cuentas con oportunidades en esta selección</div>
+      </div>
       <div class="pl-g2" style="margin-bottom:16px">
         <div class="card" style="margin-bottom:0">
-          <p class="section-lbl" id="lbl-gvp">Ganado vs Perdido por mes (${ANIO_CUOTA})</p>
+          <p class="section-lbl" id="lbl-gvp">Ganado vs Perdido por mes (${anioVista})</p>
           <div style="height:200px;position:relative"><canvas id="ch-gvp"></canvas></div>
         </div>
         <div class="card" style="margin-bottom:0">
@@ -409,7 +509,7 @@ function pintarEstructura() {
       </div>
       <div class="pl-g2" style="margin-bottom:16px">
         <div class="card" style="margin-bottom:0">
-          <p class="section-lbl">Origen de las oportunidades (CRM, Broker...)</p>
+          <p class="section-lbl">Origen de las oportunidades (clic para filtrar todo el dashboard)</p>
           <div style="height:200px;position:relative"><canvas id="ch-origen"></canvas></div>
           <div class="hint" id="sum-origen" style="margin:10px 0 0"></div>
         </div>
@@ -420,7 +520,7 @@ function pintarEstructura() {
         </div>
       </div>
       <div class="card" id="dash-cuotas-card">
-        <p class="section-lbl" id="lbl-cuotas">Avance de cuota por rep (Ganado ${ANIO_CUOTA})</p>
+        <p class="section-lbl" id="lbl-cuotas">Avance de cuota por rep (Ganado ${anioVista})</p>
         <div id="dash-cuotas"></div>
       </div>
     </div>
@@ -428,6 +528,7 @@ function pintarEstructura() {
     <!-- ═══ SUB-VISTA: OPORTUNIDADES (tabla) ═══ -->
     <div id="pl-sub-tabla" style="display:none">
       <div class="m-grid" id="pl-metricas"></div>
+      <p class="hint" id="pl-scope-note" style="margin:-8px 0 12px"></p>
 
       <div class="card" style="padding:0 16px 8px">
         <div style="display:flex;justify-content:flex-end;padding:10px 0 2px">
@@ -465,7 +566,7 @@ function pintarEstructura() {
             <thead><tr>
               <th>Cuenta</th>
               <th style="text-align:right">Oportunidades</th>
-              <th style="text-align:right">Valor total</th>
+              <th style="text-align:right" title="Activo + On hold + Ganado (sin Perdidas)">Valor total</th>
               <th style="text-align:right">Pipeline activo</th>
               <th style="text-align:right">Esperado</th>
               <th style="text-align:right">Ganado</th>
@@ -496,14 +597,17 @@ function pintarEstructura() {
               <select class="form-select" id="pl-c-estado">
                 <option value="">Seleccionar...</option>
                 ${ESTADOS.map(e => `<option>${e}</option>`).join("")}
-              </select></div>
+              </select>
+              <div class="pl-hint-estado" id="pl-hint-estado"></div></div>
             <div class="form-group"><label class="form-label">Valor (COP) *</label>
               <input class="form-input" id="pl-c-valor" type="number" min="0" placeholder="0"/></div>
             <div class="form-group"><label class="form-label">Probabilidad (%)</label>
               <input class="form-input" id="pl-c-prob" type="number" min="0" max="100" placeholder="50"/></div>
             <div class="form-group"><label class="form-label">Tipo</label>
-              <input class="form-input" id="pl-c-tipo" list="pl-dl-tipo"/>
-              <datalist id="pl-dl-tipo"></datalist></div>
+              <select class="form-select" id="pl-c-tipo">
+                <option value="">Sin definir</option>
+                ${TIPOS.map(t => `<option>${t}</option>`).join("")}
+              </select></div>
             <div class="form-group"><label class="form-label">Canal</label>
               <input class="form-input" id="pl-c-canal" list="pl-dl-canal"/>
               <datalist id="pl-dl-canal"></datalist></div>
@@ -532,7 +636,9 @@ function pintarEstructura() {
                 ${MESES.map(m => `<option>${m}</option>`).join("")}
               </select></div>
             <div class="form-group"><label class="form-label">Año radicación</label>
-              <input class="form-input" id="pl-c-anio" type="number" placeholder="${ANIO_CUOTA}"/></div>
+              <select class="form-select" id="pl-c-anio">
+                ${ANIOS_VISTA.map(a => `<option value="${a}">${a}</option>`).join("")}
+              </select></div>
             <div class="form-group"><label class="form-label">Motivo pérdida</label>
               <select class="form-select" id="pl-c-motivo">
                 <option value="">—</option>
@@ -609,6 +715,16 @@ function pintarEstructura() {
   $("pl-st-tabla").addEventListener("click", () => mostrarSub("tabla"));
   $("pl-st-ctas").addEventListener("click", () => mostrarSub("ctas"));
 
+  // Selector de año: cada pantalla muestra SOLO ese año de radicación
+  $("pl-anio-tabs").querySelectorAll(".pl-anio-tab").forEach(btn => {
+    btn.addEventListener("click", () => {
+      anioVista = parseInt(btn.dataset.anio);
+      actualizarTitulosAnio();
+      actualizarOpcionesFiltros();
+      render();
+    });
+  });
+
   // Rep del formulario: un vendedor solo puede elegirse a sí mismo
   const selRep = $("pl-c-rep");
   if (esAdmin()) {
@@ -625,6 +741,7 @@ function pintarEstructura() {
   $("pl-btn-cancelar").addEventListener("click", cerrarModal);
   $("pl-btn-guardar").addEventListener("click", guardar);
   $("pl-btn-eliminar").addEventListener("click", eliminar);
+  $("pl-c-estado").addEventListener("change", actualizarHintEstado);
 
   // Modal de cuotas (solo Gerencia)
   if (esAdmin()) {
@@ -661,6 +778,7 @@ function pintarEstructura() {
   iniciarMultiselects();
   $("pl-f-limpiar").addEventListener("click", () => {
     filtros.texto = "";
+    filtros.cuenta = "";
     $("pl-f-texto").value = "";
     MS_DEFS.forEach(def => filtros[def.clave].clear());
     actualizarMultiselects();
@@ -703,7 +821,7 @@ function actualizarOpcionesFiltros() {
   }
 
   const dl = (id, campo) => { const el = $(id); if (el) el.innerHTML = valoresUnicos(campo).map(v => `<option value="${esc(v)}">`).join(""); };
-  dl("pl-dl-tipo", "tipo"); dl("pl-dl-canal", "canal"); dl("pl-dl-origen", "origen"); dl("pl-dl-cuenta", "cuenta");
+  dl("pl-dl-canal", "canal"); dl("pl-dl-origen", "origen"); dl("pl-dl-cuenta", "cuenta");
   dl("pl-dl-segmento", "segmento"); dl("pl-dl-broker", "broker");
 }
 
@@ -711,14 +829,17 @@ function actualizarOpcionesFiltros() {
 // RENDER GENERAL
 // ═══════════════════════════════════════════
 function render() {
+  renderChips();
   renderDashboard();
   renderTabla();
   renderCuentas();
 }
 
-// Salta a la pestaña Oportunidades con un filtro aplicado
+// Salta a la pestaña Oportunidades con un filtro de estado aplicado.
+// "estado" puede ser un texto, una lista de estados o vacío (= todos).
 function irATablaFiltrada(estado, rep) {
-  filtros.estado = new Set(estado ? [estado] : []);
+  const lista = Array.isArray(estado) ? estado : (estado ? [estado] : []);
+  filtros.estado = new Set(lista);
   if (rep !== undefined) filtros.rep = new Set(rep ? [rep] : []);
   actualizarMultiselects();
   render();
@@ -733,14 +854,15 @@ function exportarCSV() {
   const filas = filtrarDeals().map(d => cols.map(k => {
     if (k === "esperado") return esperadoDe(d);
     if (k === "prob_pct") return Math.round((parseFloat(d.prob) || 0) * 100);
-    if (k === "anio_radicacion") return anioDe(d) ?? "";
+    if (k === "anio_radicacion") return anioEfectivo(d);
+    if (k === "tipo") return tipoDe(d) || (d.tipo ?? "");
     return d[k] ?? "";
   }).map(celda).join(";"));
   const csv = "\ufeff" + [cols.join(";"), ...filas].join("\n");
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
-  a.download = "pipeline_" + new Date().toISOString().slice(0, 10) + ".csv";
+  a.download = "pipeline_" + anioVista + "_" + new Date().toISOString().slice(0, 10) + ".csv";
   a.click();
   URL.revokeObjectURL(a.href);
   toast(`⬇ CSV exportado: ${filas.length} oportunidades`);
@@ -751,39 +873,45 @@ function exportarCSV() {
 // ═══════════════════════════════════════════
 function renderDashboard() {
   const u = obtenerUsuario();
-  // Universo del dashboard: rol + filtros globales aplicados
+  // Universo del dashboard: rol + filtros globales + año seleccionado
+  // (filtrarDeals ya deja solo el año que se está viendo).
   const propios = filtrarDeals();
-  const delAnio = propios.filter(esDelAnio);
+  const delAnio = propios;
 
   const activos = delAnio.filter(d => ESTADOS_ACTIVOS.has(d.estado));
+  const enHold = delAnio.filter(d => d.estado === "On hold");
   const ganados = delAnio.filter(d => d.estado === "Ganado");
   const perdidos = delAnio.filter(d => d.estado === "Perdido");
   const vActivo = activos.reduce((s, d) => s + (parseFloat(d.valor) || 0), 0);
+  const vHold = enHold.reduce((s, d) => s + (parseFloat(d.valor) || 0), 0);
   const vGanado = ganados.reduce((s, d) => s + (parseFloat(d.valor) || 0), 0);
   const vPerdido = perdidos.reduce((s, d) => s + (parseFloat(d.valor) || 0), 0);
   const vEsp = activos.reduce((s, d) => s + esperadoDe(d), 0);
 
-
+  // Las cuotas de ⚙️ Cuotas aplican a UN año (ANIO_CUOTA).
+  // En los demás años no hay cuota definida → el forecast se muestra como "—".
+  const hayCuotaAnio = anioVista === ANIO_CUOTA;
   const repsFiltrados = [...filtros.rep];
-  const cuota = !esAdmin()
+  const cuota = !hayCuotaAnio ? 0 : (!esAdmin()
     ? (CUOTAS[u.nombreRep] || 0)
     : (repsFiltrados.length
         ? repsFiltrados.reduce((s, n) => s + (CUOTAS[n] || 0), 0)
-        : Object.values(CUOTAS).reduce((s, c) => s + c, 0));
+        : Object.values(CUOTAS).reduce((s, c) => s + c, 0)));
   const fPct = cuota > 0 ? Math.round((vGanado + vEsp) / cuota * 100) : 0;
-  const colorF = fPct >= 100 ? "#16a34a" : fPct >= 80 ? "#d97706" : "#dc2626";
+  const colorF = cuota === 0 ? "#9b9b96" : fPct >= 100 ? "#16a34a" : fPct >= 80 ? "#d97706" : "#dc2626";
 
-  // 🩺 Salud de datos (solo Gerencia): huecos del histórico
+  // 🩺 Salud de datos (solo Gerencia): huecos del año en pantalla
   const salud = $("dash-salud");
   if (salud) {
-    const noPerdidas = baseDeals().filter(d => d.estado !== "Perdido");
+    const delAnioBase = baseDeals().filter(d => anioEfectivo(d) === anioVista);
+    const noPerdidas = delAnioBase.filter(d => d.estado !== "Perdido");
     const sinMes = noPerdidas.filter(d => !MESES.includes(String(d.mes_radicacion || "").toLowerCase())).length;
-    const sinProb = baseDeals().filter(d => ESTADOS_ACTIVOS.has(d.estado) && !(parseFloat(d.prob) > 0)).length;
+    const sinProb = delAnioBase.filter(d => ESTADOS_ACTIVOS.has(d.estado) && !(parseFloat(d.prob) > 0)).length;
     if (!esAdmin() || sinMes + sinProb === 0) {
       salud.style.display = "none";
     } else {
       salud.style.display = "block";
-      salud.innerHTML = `🩺 Calidad de datos: <b>${sinMes}</b> oportunidades sin mes de radicación · <b>${sinProb}</b> activas sin probabilidad — clic para revisarlas`;
+      salud.innerHTML = `🩺 Calidad de datos ${anioVista}: <b>${sinMes}</b> oportunidades sin mes de radicación · <b>${sinProb}</b> activas sin probabilidad — clic para revisarlas`;
       salud.onclick = () => {
         ordenCampo = "mes_radicacion"; ordenDir = 1;
         renderTabla();
@@ -795,31 +923,35 @@ function renderDashboard() {
 
   // Tarjetas
   $("dash-cards").innerHTML = `
-    <div class="m-card"><div class="m-lbl">Cuota ${ANIO_CUOTA}</div>
-      <div class="m-val">${fmt(cuota)}</div>
-      <div class="m-sub">${!esAdmin() ? "mi cuota" : (repsFiltrados.length === 1 ? "cuota de " + esc(repsFiltrados[0]) : repsFiltrados.length > 1 ? "cuota de " + repsFiltrados.length + " reps" : "equipo completo")}</div></div>
-    <div class="m-card clic" id="dc-ganado"><div class="m-lbl">Ganado ${ANIO_CUOTA}</div>
+    <div class="m-card"><div class="m-lbl">Cuota ${anioVista}</div>
+      <div class="m-val">${hayCuotaAnio ? fmt(cuota) : "—"}</div>
+      <div class="m-sub">${!hayCuotaAnio ? "sin cuota definida para " + anioVista : !esAdmin() ? "mi cuota" : (repsFiltrados.length === 1 ? "cuota de " + esc(repsFiltrados[0]) : repsFiltrados.length > 1 ? "cuota de " + repsFiltrados.length + " reps" : "equipo completo")}</div></div>
+    <div class="m-card clic" id="dc-ganado"><div class="m-lbl">Ganado ${anioVista}</div>
       <div class="m-val" style="color:var(--green)">${fmt(vGanado)}</div>
       <div class="m-sub">${ganados.length} oportunidades · clic para ver</div></div>
     <div class="m-card clic" id="dc-activo"><div class="m-lbl">Pipeline activo</div>
       <div class="m-val" style="color:var(--blue)">${fmt(vActivo)}</div>
-      <div class="m-sub">esperado: ${fmt(vEsp)}</div></div>
+      <div class="m-sub">${activos.length} ops · esperado: ${fmt(vEsp)}</div></div>
     <div class="m-card"><div class="m-lbl">Forecast</div>
-      <div class="m-val" style="color:${colorF}">${fPct}%</div>
+      <div class="m-val" style="color:${colorF}">${cuota > 0 ? fPct + "%" : "—"}</div>
       <div class="m-sub">(ganado + esperado) / cuota</div></div>
-    <div class="m-card clic" id="dc-perdido"><div class="m-lbl">Perdido ${ANIO_CUOTA}</div>
+    <div class="m-card clic" id="dc-hold"><div class="m-lbl">On hold</div>
+      <div class="m-val" style="color:#b45309">${fmt(vHold)}</div>
+      <div class="m-sub">${enHold.length} ops · no suma al pipeline</div></div>
+    <div class="m-card clic" id="dc-perdido"><div class="m-lbl">Perdido ${anioVista}</div>
       <div class="m-val" style="color:var(--red)">${fmt(vPerdido)}</div>
       <div class="m-sub">${perdidos.length} oportunidades · clic para ver</div></div>
   `;
   $("dc-ganado").addEventListener("click", () => irATablaFiltrada("Ganado"));
   $("dc-perdido").addEventListener("click", () => irATablaFiltrada("Perdido"));
-  $("dc-activo").addEventListener("click", () => irATablaFiltrada(""));
+  $("dc-hold").addEventListener("click", () => irATablaFiltrada("On hold"));
+  $("dc-activo").addEventListener("click", () => irATablaFiltrada([...ESTADOS_ACTIVOS]));
 
   // Dona de forecast
   mkChart("ch-forecast", {
     type: "doughnut",
     data: { datasets: [{
-      data: [Math.min(fPct, 100), Math.max(100 - fPct, 0)],
+      data: cuota > 0 ? [Math.min(fPct, 100), Math.max(100 - fPct, 0)] : [0, 100],
       backgroundColor: [colorF, "#f0efe9"],
       borderWidth: 0
     }]},
@@ -829,16 +961,26 @@ function renderDashboard() {
         legend: { display: false }, tooltip: { enabled: false },
         title: {
           display: true,
-          text: [`${fPct}% del forecast`, `Ganado ${fmt(vGanado)} + Esp. ${fmt(vEsp)}`, `Cuota: ${fmt(cuota)}`],
+          text: cuota > 0
+            ? [`${fPct}% del forecast`, `Ganado ${fmt(vGanado)} + Esp. ${fmt(vEsp)}`, `Cuota: ${fmt(cuota)}`]
+            : [`Sin cuota definida para ${anioVista}`, `Ganado ${fmt(vGanado)} + Esp. ${fmt(vEsp)}`],
           font: { size: 12 }, color: "#1a1a18"
         }
       }
     }
   });
 
-  // Embudo por estado
+  // Embudo por estado (solo las 4 etapas activas) + On hold aparte, en gris
   const maxV = Math.max(...ORDEN_EMBUDO.map(e =>
     activos.filter(d => d.estado === e).reduce((s, d) => s + (parseFloat(d.valor) || 0), 0)), 1);
+  const filaHold = enHold.length
+    ? `<div class="funnel-row clic funnel-hold" data-estado="On hold" title="On hold no suma al pipeline activo">
+        <span class="funnel-lbl">On hold</span>
+        <div class="funnel-track"><div class="funnel-fill" style="width:${Math.max(Math.min(Math.round(vHold / maxV * 100), 100), 8)}%">${fmt(vHold)}</div></div>
+        <span class="funnel-n">${enHold.length} ops</span>
+      </div>
+      <p class="hint" style="margin:0 0 0 102px">Fuera del pipeline activo: no suma valor ni esperado.</p>`
+    : "";
   $("dash-funnel").innerHTML = ORDEN_EMBUDO.map((e, i) => {
     const sub = activos.filter(d => d.estado === e);
     const v = sub.reduce((s, d) => s + (parseFloat(d.valor) || 0), 0);
@@ -848,7 +990,7 @@ function renderDashboard() {
       <div class="funnel-track"><div class="funnel-fill" style="width:${Math.max(w, 8)}%;background:${COLORES_EMBUDO[i]}">${fmt(v)}</div></div>
       <span class="funnel-n">${sub.length} ops</span>
     </div>`;
-  }).join("");
+  }).join("") + filaHold;
   $("dash-funnel").querySelectorAll(".funnel-row").forEach(row => {
     row.addEventListener("click", () => irATablaFiltrada(row.dataset.estado));
   });
@@ -857,7 +999,7 @@ function renderDashboard() {
   // Forecast de radicación mensual:
   //   Ganado → cuenta al 100% de su valor en su mes de radicación
   //   Activo → cuenta su valor esperado (valor × probabilidad)
-  //   Perdido → no cuenta
+  //   On hold / Perdido → no cuentan
   // La barra apilada de cada mes = lo que se proyecta radicar ese mes.
   const mesGan = {}, mesEsp = {};
   let sinMesGan = 0, sinMesEsp = 0;
@@ -913,15 +1055,85 @@ function renderDashboard() {
     }
   });
 
+  // ── Top 10 cuentas: pipeline completo de cada cuenta, apilado por estado ──
+  const ctaMap = {};
+  propios.forEach(d => {
+    if (!TOP_ESTADOS.includes(d.estado)) return; // Perdido no entra
+    const k = String(d.cuenta || "").trim();
+    if (!k) return;
+    const m = ctaMap[k] = ctaMap[k] || { total: 0, activo: 0, hold: 0, n: 0, porEstado: {} };
+    const v = parseFloat(d.valor) || 0;
+    m.n++;
+    // El ranking suma activo + ganado; On hold se muestra pero NO suma
+    if (d.estado === "On hold") m.hold += v; else m.total += v;
+    if (ESTADOS_ACTIVOS.has(d.estado)) m.activo += v;
+    const pe = m.porEstado[d.estado] = m.porEstado[d.estado] || { v: 0, n: 0 };
+    pe.v += v; pe.n++;
+  });
+  const top10 = Object.keys(ctaMap)
+    .sort((a, b) => (ctaMap[b].total - ctaMap[a].total) || (ctaMap[b].hold - ctaMap[a].hold))
+    .slice(0, 10);
+  const vacioTop = $("top10-vacio");
+  if (vacioTop) vacioTop.style.display = top10.length ? "none" : "block";
+  if (top10.length) {
+    const estadosPresentes = TOP_ESTADOS.filter(e => top10.some(c => ctaMap[c].porEstado[e]));
+    mkChart("ch-top10", {
+      type: "bar",
+      data: {
+        labels: top10.map(c => c.length > 24 ? c.slice(0, 23) + "…" : c),
+        datasets: estadosPresentes.map(e => ({
+          label: e === "On hold" ? "On hold (no suma)" : e,
+          data: top10.map(c => ctaMap[c].porEstado[e]?.v || 0),
+          backgroundColor: TOP_COLORES[e],
+          borderRadius: 3,
+          stack: "cuenta"
+        }))
+      },
+      options: {
+        indexAxis: "y", responsive: true, maintainAspectRatio: false,
+        onClick: (evt, elems) => {
+          if (!elems.length) return;
+          filtros.cuenta = top10[elems[0].index];
+          render();
+          mostrarSub("tabla");
+        },
+        plugins: {
+          legend: { position: "bottom", labels: { boxWidth: 10, font: { size: 10 }, padding: 8 } },
+          tooltip: { callbacks: {
+            title: (items) => items.length ? top10[items[0].dataIndex] : "",
+            label: (c2) => {
+              const est = estadosPresentes[c2.datasetIndex];
+              const pe = ctaMap[top10[c2.dataIndex]].porEstado[est];
+              return pe ? `${c2.dataset.label}: ${fmtFull(pe.v)} · ${pe.n} ops` : null;
+            },
+            footer: (items) => {
+              if (!items.length) return "";
+              const m = ctaMap[top10[items[0].dataIndex]];
+              return `Total cuenta (activo + ganado): ${fmtFull(m.total)} · ${m.n} ops\nPipeline activo: ${fmtFull(m.activo)}` +
+                (m.hold ? `\nOn hold (no suma): ${fmtFull(m.hold)}` : "");
+            }
+          }, filter: (it) => it.raw > 0 }
+        },
+        scales: {
+          x: { stacked: true, ticks: { callback: v => fmt(v) } },
+          y: { stacked: true, grid: { display: false }, ticks: { font: { size: 11 } } }
+        }
+      }
+    });
+  } else if (charts["ch-top10"]) {
+    charts["ch-top10"].destroy(); delete charts["ch-top10"];
+  }
+
   // Avance de cuota por rep (Gerencia ve a todos; un vendedor su barra)
   let nombres;
-  if (!esAdmin()) nombres = CUOTAS[u.nombreRep] ? [u.nombreRep] : [];
+  if (!hayCuotaAnio) nombres = [];
+  else if (!esAdmin()) nombres = CUOTAS[u.nombreRep] ? [u.nombreRep] : [];
   else if (repsFiltrados.length) nombres = repsFiltrados.filter(n => CUOTAS[n] !== undefined);
   else nombres = Object.keys(CUOTAS);
   $("dash-cuotas").innerHTML = nombres.map(nombre => {
     const cuotaRep = CUOTAS[nombre];
     const cumplido = propios
-      .filter(d => d.rep === nombre && d.estado === "Ganado" && esDelAnio(d))
+      .filter(d => d.rep === nombre && d.estado === "Ganado")
       .reduce((s, d) => s + (parseFloat(d.valor) || 0), 0);
     const pct = cuotaRep > 0 ? Math.round(cumplido / cuotaRep * 100) : 0;
     const color = pct >= 100 ? "#16a34a" : pct >= 60 ? "#d97706" : "#2563EB";
@@ -932,7 +1144,7 @@ function renderDashboard() {
       </div>
       <div class="cuota-bar-bg"><div class="cuota-bar-fill" style="width:${Math.min(pct, 100)}%;background:${color}"></div></div>
     </div>`;
-  }).join("") || `<div class="lista-vacia">Sin cuota asignada</div>`;
+  }).join("") || `<div class="lista-vacia">${hayCuotaAnio ? "Sin cuota asignada" : "Sin cuota definida para " + anioVista + " (las cuotas actuales son de " + ANIO_CUOTA + ")"}</div>`;
   if (esAdmin()) {
     $("dash-cuotas").querySelectorAll(".cuota-row").forEach(row => {
       row.addEventListener("click", () => irATablaFiltrada("", row.dataset.rep));
@@ -1063,6 +1275,7 @@ function renderDashboard() {
     `<b>${esc(k)}</b>: ${bucketsCanal[k].n} ops · ${fmt(bucketsCanal[k].v)}`).join(" &nbsp;·&nbsp; ");
 
   // ── Origen de llegada (CRM, Broker, Agenda Comercial...) ──
+  // Clic en una porción o en la leyenda → filtra TODO el dashboard (toggle).
   const bucketsOrigen = {};
   propios.forEach(d => {
     const crudo = String(d.origen || "").trim();
@@ -1082,13 +1295,24 @@ function renderDashboard() {
       cutout: "60%", responsive: true, maintainAspectRatio: false,
       onClick: (evt, elems) => {
         if (!elems.length) return;
-        const k = origenLabels[elems[0].index];
-        filtros.origen = new Set([k]);
-        actualizarMultiselects(); render(); mostrarSub("tabla");
+        toggleOrigen(origenLabels[elems[0].index]);
+      },
+      onHover: (evt, elems) => {
+        const t = evt.native && evt.native.target;
+        if (t) t.style.cursor = elems.length ? "pointer" : "default";
       },
       plugins: {
-        legend: { position: "right", labels: { boxWidth: 10, font: { size: 11 } } },
-        tooltip: { callbacks: { label: (c2) => `${c2.label}: ${fmtFull(c2.raw)} · ${bucketsOrigen[c2.label].n} ops` } }
+        legend: {
+          position: "right", labels: { boxWidth: 10, font: { size: 11 } },
+          // Clic en la leyenda = filtrar el dashboard por ese origen
+          onClick: (evt, item) => toggleOrigen(origenLabels[item.index]),
+          onHover: (evt) => { const t = evt.native && evt.native.target; if (t) t.style.cursor = "pointer"; },
+          onLeave: (evt) => { const t = evt.native && evt.native.target; if (t) t.style.cursor = "default"; }
+        },
+        tooltip: { callbacks: {
+          label: (c2) => `${c2.label}: ${fmtFull(c2.raw)} · ${bucketsOrigen[c2.label].n} ops`,
+          footer: () => "Clic para filtrar el dashboard por este origen"
+        } }
       }
     }
   });
@@ -1142,15 +1366,17 @@ function renderDashboard() {
 // Lo usan TANTO el Dashboard como la tabla de Oportunidades.
 function filtrarDeals() {
   return baseDeals().filter(d => {
+    // Año: cada pantalla muestra ÚNICAMENTE el año seleccionado (2026, 2027 o 2028)
+    if (anioEfectivo(d) !== anioVista) return false;
     if (filtros.rep.size && !filtros.rep.has(d.rep)) return false;
     if (filtros.estado.size && !filtros.estado.has(d.estado)) return false;
-    if (filtros.tipo.size && !filtros.tipo.has(String(d.tipo || "").trim())) return false;
+    if (filtros.tipo.size && !filtros.tipo.has(tipoDe(d) || "Sin tipo")) return false;
     if (filtros.canal.size && !filtros.canal.has(String(d.canal || "").trim() || "Sin canal")) return false;
     if (filtros.segmento.size && !filtros.segmento.has(segmentoDe(d) || "Sin segmento")) return false;
     if (filtros.origen.size && !filtros.origen.has(String(d.origen || "").trim() || "Sin origen")) return false;
     if (filtros.riesgo.size && !filtros.riesgo.has(String(d.riesgo || "").trim())) return false;
     if (filtros.mes.size && !filtros.mes.has(d.mes_radicacion)) return false;
-    if (filtros.anio.size && !filtros.anio.has(String(anioDe(d) ?? ""))) return false;
+    if (filtros.cuenta && String(d.cuenta || "").trim().toLowerCase() !== filtros.cuenta.toLowerCase()) return false;
     if (filtros.texto) {
       const blob = ((d.oportunidad || "") + " " + (d.cuenta || "") + " " + (d.broker || "")).toLowerCase();
       if (!blob.includes(filtros.texto)) return false;
@@ -1160,7 +1386,12 @@ function filtrarDeals() {
 }
 
 function renderTabla() {
-  const visibles = filtrarDeals();
+  const todasVisibles = filtrarDeals();
+  // Por defecto las Perdidas NO se listan (ya no son pipeline). Se ven
+  // marcando "Perdido" en el filtro Estado o desde la tarjeta "Perdido".
+  const visibles = filtros.estado.size ? todasVisibles : todasVisibles.filter(d => d.estado !== "Perdido");
+  const noteEl = $("pl-scope-note");
+  if (noteEl) noteEl.textContent = notaAlcance();
 
   const activos = visibles.filter(d => ESTADOS_ACTIVOS.has(d.estado));
   const ganados = visibles.filter(d => d.estado === "Ganado");
@@ -1170,7 +1401,7 @@ function renderTabla() {
   $("pl-metricas").innerHTML = `
     <div class="m-card"><div class="m-lbl">Pipeline activo</div>
       <div class="m-val" style="color:var(--blue)">${fmt(valorActivo)}</div>
-      <div class="m-sub">${activos.length} oportunidades</div></div>
+      <div class="m-sub">${activos.length} oportunidades (sin On hold)</div></div>
     <div class="m-card"><div class="m-lbl">Valor esperado</div>
       <div class="m-val" style="color:var(--purple)">${fmt(espActivo)}</div>
       <div class="m-sub">valor × probabilidad</div></div>
@@ -1184,6 +1415,7 @@ function renderTabla() {
 
   const orden = [...visibles].sort((a, b) => {
     let va = a[ordenCampo], vb = b[ordenCampo];
+    if (ordenCampo === "esperado") { va = esperadoDe(a); vb = esperadoDe(b); }
     if (["valor", "esperado", "prob"].includes(ordenCampo)) {
       va = parseFloat(va) || 0; vb = parseFloat(vb) || 0;
       return (va - vb) * ordenDir;
@@ -1215,7 +1447,7 @@ function renderTabla() {
         <td style="text-align:right" title="${fmtFull(esp)}">${fmt(esp)}</td>
         <td style="text-align:right">${Math.round(p * 100)}%</td>
         <td>${rBadge(d.riesgo)}</td>
-        <td>${esc(d.mes_radicacion) || "—"}${anioDe(d) !== null ? " · " + anioDe(d) : ""}</td>
+        <td>${esc(d.mes_radicacion) || "—"} · ${anioEfectivo(d)}</td>
         <td style="text-align:right">${puedeEditar(d)
           ? `<button class="btn-editar" data-id="${d.id}" title="Editar oportunidad" aria-label="Editar oportunidad">✏️</button>` : ""}</td>
       </tr>`;
@@ -1229,9 +1461,45 @@ function renderTabla() {
   });
 }
 
+// Nota de alcance mostrada en "Oportunidades"
+function notaAlcance() {
+  const partes = [`año de radicación ${anioVista}`];
+  if (!filtros.estado.size) partes.push("sin Perdidas");
+  return `Mostrando: ${partes.join(" · ")}. Cambia el año arriba a la derecha o ajusta los filtros para ver más.`;
+}
+
 // ═══════════════════════════════════════════
 // MODAL
 // ═══════════════════════════════════════════
+// Aviso en el formulario: qué pasa con el valor al marcar Perdido / On hold
+function actualizarHintEstado() {
+  const est = $("pl-c-estado").value;
+  const el = $("pl-hint-estado");
+  if (!el) return;
+  if (est === "Perdido") {
+    el.textContent = "Al guardar como Perdida sale del pipeline activo y su valor esperado queda en $0.";
+    el.style.display = "block";
+  } else if (est === "On hold") {
+    el.textContent = "On hold no suma al pipeline activo ni al valor esperado.";
+    el.style.display = "block";
+  } else {
+    el.style.display = "none";
+  }
+}
+
+// Selector cerrado con opción temporal "(valor anterior)" para no perder
+// datos viejos que no encajan en la lista (ej. tipo "Proyecto" o año 2025).
+function setSelectConLegado(sel, valor) {
+  sel.querySelectorAll("option[data-legado]").forEach(o => o.remove());
+  const v = String(valor ?? "").trim();
+  if (v && ![...sel.options].some(o => o.value === v)) {
+    const op = document.createElement("option");
+    op.value = v; op.textContent = v + " (valor anterior)"; op.dataset.legado = "1";
+    sel.appendChild(op);
+  }
+  sel.value = v;
+}
+
 function abrirModal(deal) {
   editandoId = deal ? deal.id : null;
   $("pl-modal-titulo").textContent = deal ? "Editar oportunidad" : "Nueva oportunidad";
@@ -1243,7 +1511,7 @@ function abrirModal(deal) {
   $("pl-c-valor").value = deal?.valor ?? "";
   const prob = parseFloat(deal?.prob);
   $("pl-c-prob").value = isNaN(prob) ? "" : Math.round(prob * 100);
-  $("pl-c-tipo").value = deal?.tipo || "";
+  setSelectConLegado($("pl-c-tipo"), deal ? (tipoDe(deal) || deal.tipo || "") : "");
   $("pl-c-canal").value = deal?.canal || "";
   $("pl-c-origen").value = deal?.origen || "";
   $("pl-c-riesgo").value = deal?.riesgo || "";
@@ -1251,10 +1519,12 @@ function abrirModal(deal) {
   $("pl-c-broker").value = deal?.broker || "";
   $("pl-c-mes-inicio").value = deal?.mes_inicio || "";
   $("pl-c-mes").value = deal?.mes_radicacion || "";
-  $("pl-c-anio").value = deal?.anio_radicacion || "";
+  // Nueva oportunidad → por defecto el año que se está viendo en pantalla
+  setSelectConLegado($("pl-c-anio"), deal ? String(anioEfectivo(deal)) : String(anioVista));
   $("pl-c-motivo").value = deal?.motivo_perdida || "";
   $("pl-c-comentarios").value = deal?.comentarios || "";
   $("pl-btn-eliminar").style.display = (deal && esAdmin()) ? "inline-block" : "none";
+  actualizarHintEstado();
   $("pl-modal").classList.add("open");
 }
 
@@ -1281,12 +1551,14 @@ async function guardar() {
 
   const probPct = parseFloat($("pl-c-prob").value);
   const prob = isNaN(probPct) ? 0 : Math.min(Math.max(probPct, 0), 100) / 100;
+  const anioSel = parseInt($("pl-c-anio").value);
   const datos = {
     oportunidad, cuenta, rep, estado,
     valor,
     prob,
-    esperado: Math.round(valor * prob),
-    tipo: $("pl-c-tipo").value.trim(),
+    // Perdida → valor esperado 0 automáticamente
+    esperado: estado === "Perdido" ? 0 : Math.round(valor * prob),
+    tipo: $("pl-c-tipo").value,
     canal: $("pl-c-canal").value.trim(),
     origen: $("pl-c-origen").value.trim(),
     riesgo: $("pl-c-riesgo").value,
@@ -1294,7 +1566,7 @@ async function guardar() {
     broker: $("pl-c-broker").value.trim(),
     mes_inicio: $("pl-c-mes-inicio").value,
     mes_radicacion: $("pl-c-mes").value,
-    anio_radicacion: $("pl-c-anio").value ? parseInt($("pl-c-anio").value) : null,
+    anio_radicacion: isNaN(anioSel) ? anioVista : anioSel,
     motivo_perdida: $("pl-c-motivo").value,
     comentarios: $("pl-c-comentarios").value.trim()
   };
@@ -1307,7 +1579,9 @@ async function guardar() {
 
   if (res.ok) {
     cerrarModal();
-    toast(eraEdicion ? "✓ Oportunidad actualizada" : "✓ Oportunidad creada");
+    toast(estado === "Perdido"
+      ? "✓ Marcada como Perdida — salió del pipeline activo"
+      : (eraEdicion ? "✓ Oportunidad actualizada" : "✓ Oportunidad creada"));
   }
   else err.textContent = res.error;
 }
@@ -1392,7 +1666,9 @@ function renderCuentas() {
     const k = raw.toLowerCase();
     const m = mapa[k] = mapa[k] || { nombre: raw, n: 0, total: 0, activo: 0, esperado: 0, ganado: 0 };
     const v = parseFloat(d.valor) || 0;
-    m.n++; m.total += v;
+    m.n++;
+    // Valor total = todo menos Perdidas (lo perdido ya no es pipeline)
+    if (d.estado !== "Perdido") m.total += v;
     if (ESTADOS_ACTIVOS.has(d.estado)) { m.activo += v; m.esperado += esperadoDe(d); }
     if (d.estado === "Ganado") m.ganado += v;
   });
@@ -1427,8 +1703,7 @@ function renderCuentas() {
     tr.addEventListener("click", () => {
       const nombre = tr.dataset.cta;
       if (nombre === "(Sin cuenta)") return;
-      filtros.texto = nombre.toLowerCase();
-      $("pl-f-texto").value = nombre;
+      filtros.cuenta = nombre; // filtro exacto (antes buscaba por texto parcial)
       render();
       mostrarSub("tabla");
     });
@@ -1496,8 +1771,9 @@ async function guardarMasiva() {
     const prob = proPct / 100;
     porCrear.push({
       oportunidad: opp, cuenta: cta, rep, estado: est,
-      valor: val, prob, esperado: Math.round(val * prob),
-      mes_radicacion: mes, anio_radicacion: null,
+      valor: val, prob, esperado: est === "Perdido" ? 0 : Math.round(val * prob),
+      // Se crean en el año que se está viendo en pantalla
+      mes_radicacion: mes, anio_radicacion: anioVista,
       tipo: "", canal: "", origen: "", riesgo: "", segmento: "", broker: "",
       mes_inicio: "", motivo_perdida: "", comentarios: ""
     });

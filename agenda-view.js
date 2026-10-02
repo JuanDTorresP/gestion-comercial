@@ -1,6 +1,13 @@
 // ═══════════════════════════════════════════════════════════
-// agenda-view.js — v3
-// Novedades sobre la v2:
+// agenda-view.js — v4
+// Cambios v4 (oct 2026):
+//  · Elizabeth ya no aparece en la agenda (tarjetas, filtros, gráficas,
+//    listas). Sus gestiones NO se borran de Firestore: solo se ocultan.
+//  · Trazabilidad: si desde una gestión la oportunidad pasa a "Perdido",
+//    su valor esperado queda en 0 (misma regla del pipeline v4).
+//  · Las oportunidades creadas desde la agenda quedan con el año de
+//    radicación de la fecha de la gestión (para el selector 2026/27/28).
+// Novedades de la v3 sobre la v2:
 //  · 🗓 Semana: gráfica de gestiones por día + tarjetas clicables
 //  · 🔗 TRAZABILIDAD CON EL PIPELINE: una gestión comercial se
 //    puede vincular a una oportunidad. Al guardarla:
@@ -18,6 +25,17 @@ import {
 
 // ── Constantes de negocio ──
 const REPS_BASE = ["Patricia Lopera", "Clemencia Rodriguez", "Ivan Muñoz", "Johana Mayo"];
+// Reps que ya no deben aparecer en la agenda. Se compara por primer nombre,
+// sin tildes ni mayúsculas, así cubre "Elizabeth" y "Elizabeth <apellido>".
+// Sus gestiones siguen en Firestore; solo se ocultan de todas las vistas.
+const REPS_EXCLUIDOS = ["elizabeth"];
+function normNombre(s) {
+  return String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").trim().toLowerCase();
+}
+function esRepExcluido(nombre) {
+  const primero = normNombre(nombre).split(/\s+/)[0];
+  return REPS_EXCLUIDOS.includes(primero);
+}
 const ETAPAS = ["Identificado", "Seguimiento", "Cotización", "Diseño", "Negociación"];
 const ETAPA_COLORS = { "Identificado": "#2563EB", "Seguimiento": "#7c3aed", "Cotización": "#d97706", "Diseño": "#dc2626", "Negociación": "#16a34a" };
 const REP_COLORS = ["#2563EB", "#16a34a", "#7c3aed", "#d97706", "#dc2626", "#0d9488"];
@@ -83,9 +101,16 @@ function puedeEditar(g) {
 // Base de datos visible según el rol:
 // Gerencia ve todo; un vendedor SOLO sus propias gestiones.
 function baseGestiones() {
-  if (esAdmin()) return gestiones;
+  const visibles = gestiones.filter(g => !esRepExcluido(g.rep));
+  if (esAdmin()) return visibles;
   const u = obtenerUsuario();
-  return gestiones.filter(g => g.rep === u?.nombreRep);
+  return visibles.filter(g => g.rep === u?.nombreRep);
+}
+// Lista de reps para filtros y tarjetas (sin los excluidos)
+function repsVisibles() {
+  return [...new Set([...REPS_BASE, ...gestiones.map(g => g.rep).filter(Boolean)])]
+    .filter(r => !esRepExcluido(r))
+    .sort();
 }
 function chip(txt, bg, cl) {
   return txt ? `<span class="badge" style="background:${bg};color:${cl}">${esc(txt)}</span>` : "";
@@ -564,7 +589,7 @@ function actualizarOpcionesFiltros() {
   selMes.innerHTML = `<option value="">Mes: Todos</option>` +
     meses.map(m => `<option value="${m}" ${m === filtros.mes ? "selected" : ""}>${nombreMes(m)}</option>`).join("");
 
-  const reps = [...new Set([...REPS_BASE, ...gestiones.map(g => g.rep).filter(Boolean)])].sort();
+  const reps = repsVisibles();
   const llenarRep = (id, valorActual) => {
     const sel = $(id);
     sel.innerHTML = `<option value="">Rep: Todos</option>` +
@@ -791,8 +816,9 @@ function renderEquipo() {
   const cont = $("eq-cards");
   if (!cont) return;
 
-  const delMes = eqMes ? gestiones.filter(g => mesDe(g) === eqMes) : gestiones;
-  const reps = [...new Set([...REPS_BASE, ...gestiones.map(g => g.rep).filter(Boolean)])].sort();
+  const base = baseGestiones();
+  const delMes = eqMes ? base.filter(g => mesDe(g) === eqMes) : base;
+  const reps = repsVisibles();
   $("eq-conteo").textContent = `${delMes.length} gestión(es) del equipo en ${nombreMes(eqMes) || "total"}`;
 
   cont.innerHTML = reps.map((nombre, i) => {
@@ -1352,9 +1378,11 @@ async function guardar() {
         btn.disabled = false; btn.textContent = "💾 Guardar gestión";
         return;
       }
+      const anioGestion = parseInt(String(fecha).slice(0, 4), 10);
       const resDeal = await crearDeal({
         oportunidad, cuenta, rep, estado, valor,
-        prob: 0.5, esperado: Math.round(valor * 0.5),
+        prob: 0.5, esperado: estado === "Perdido" ? 0 : Math.round(valor * 0.5),
+        anio_radicacion: isNaN(anioGestion) ? new Date().getFullYear() : anioGestion,
         canal: "", origen: "Agenda Comercial", comentarios: "Creada desde una gestión de la agenda"
       });
       if (!resDeal.ok) {
@@ -1372,9 +1400,14 @@ async function guardar() {
       if (estado) cambios.estado = estado;
       if (!isNaN(valor)) cambios.valor = valor;
       const dealActual = deals.find(d => d.id === vinculo);
-      if (!isNaN(valor) && dealActual) {
+      if (dealActual) {
+        // Perdida → esperado 0. Si no, valor (nuevo o actual) × probabilidad.
+        // Se recalcula siempre que cambie el estado o el valor, para que una
+        // oportunidad que vuelve de Perdido a activa recupere su esperado.
+        const estadoFinal = estado || dealActual.estado;
+        const valorFinal = !isNaN(valor) ? valor : (parseFloat(dealActual.valor) || 0);
         const p = parseFloat(dealActual.prob) || 0;
-        cambios.esperado = Math.round(valor * p);
+        cambios.esperado = estadoFinal === "Perdido" ? 0 : Math.round(valorFinal * p);
       }
       if (Object.keys(cambios).length) {
         const resDeal = await actualizarDeal(vinculo, cambios);
