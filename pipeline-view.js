@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════
-// pipeline-view.js — v4
+// pipeline-view.js — v4.1
 // Vista del Pipeline con tres sub-pestañas:
 //   📈 Dashboard      → forecast vs cuota, embudo, pipeline por
 //                       mes, top 10 cuentas y avance de cuota
@@ -12,6 +12,8 @@
 // Cambios v4 (oct 2026):
 //  1. Perdido → sale del pipeline activo y su valor esperado es 0
 //     (se guarda en 0 y además se fuerza en 0 al leer registros viejos).
+//     v4.1: Ganado → probabilidad 100% y valor esperado = 100% del valor
+//     (formulario, carga masiva, agenda y registros viejos).
 //  2. Dona "Origen": clic en una porción o en un ítem de la leyenda
 //     filtra TODO el dashboard por ese origen (clic de nuevo = quitar).
 //  3. Nueva gráfica "Top 10 cuentas" con el pipeline completo de cada
@@ -132,11 +134,27 @@ function valoresUnicos(campo, base = []) {
   baseDeals().forEach(d => { const v = d[campo]; if (v !== undefined && v !== null && String(v).trim() !== "") set.add(String(v).trim()); });
   return [...set].sort((a, b) => String(a).localeCompare(String(b), "es"));
 }
+// ── Regla única de probabilidad y valor esperado según el estado ──
+//   Ganado  → probabilidad 100% y esperado = 100% del valor
+//   Perdido → esperado 0
+//   Resto   → valor × probabilidad
+// La usan el formulario, la carga masiva y la lectura de registros viejos.
+function probYEsperado(estado, valor, prob) {
+  const v = parseFloat(valor) || 0;
+  const p = parseFloat(prob) || 0;
+  if (estado === "Ganado") return { prob: 1, esperado: Math.round(v) };
+  if (estado === "Perdido") return { prob: p, esperado: 0 };
+  return { prob: p, esperado: Math.round(v * p) };
+}
+// Probabilidad a mostrar (una Ganada siempre es 100%)
+function probDe(d) {
+  return d.estado === "Ganado" ? 1 : (parseFloat(d.prob) || 0);
+}
 // Valor esperado de un deal (usa el guardado o lo calcula).
-// Una oportunidad PERDIDA siempre vale 0 de esperado, aunque el
-// registro viejo en Firestore tenga otro número guardado.
+// Ganada = 100% del valor y Perdida = 0, aunque el registro viejo
+// en Firestore tenga otro número guardado.
 function esperadoDe(d) {
-  if (d.estado === "Perdido") return 0;
+  if (d.estado === "Ganado" || d.estado === "Perdido") return probYEsperado(d.estado, d.valor, d.prob).esperado;
   const v = parseFloat(d.valor) || 0, p = parseFloat(d.prob) || 0;
   return (d.esperado != null && !isNaN(parseFloat(d.esperado))) ? parseFloat(d.esperado) : Math.round(v * p);
 }
@@ -853,7 +871,7 @@ function exportarCSV() {
   const celda = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
   const filas = filtrarDeals().map(d => cols.map(k => {
     if (k === "esperado") return esperadoDe(d);
-    if (k === "prob_pct") return Math.round((parseFloat(d.prob) || 0) * 100);
+    if (k === "prob_pct") return Math.round(probDe(d) * 100);
     if (k === "anio_radicacion") return anioEfectivo(d);
     if (k === "tipo") return tipoDe(d) || (d.tipo ?? "");
     return d[k] ?? "";
@@ -1436,7 +1454,7 @@ function renderTabla() {
     : orden.map(d => {
       const v = parseFloat(d.valor) || 0;
       const esp = esperadoDe(d);
-      const p = parseFloat(d.prob) || 0;
+      const p = probDe(d);
       return `
       <tr>
         <td>${esc(d.oportunidad)}</td>
@@ -1471,11 +1489,28 @@ function notaAlcance() {
 // ═══════════════════════════════════════════
 // MODAL
 // ═══════════════════════════════════════════
-// Aviso en el formulario: qué pasa con el valor al marcar Perdido / On hold
+// Aviso en el formulario: qué pasa con el valor al marcar Ganado / Perdido / On hold.
+// Ganado deja la probabilidad fija en 100% (el campo se bloquea).
 function actualizarHintEstado() {
   const est = $("pl-c-estado").value;
   const el = $("pl-hint-estado");
+  const probEl = $("pl-c-prob");
+  if (probEl) {
+    if (est === "Ganado") {
+      probEl.value = 100;
+      probEl.disabled = true;
+    } else {
+      probEl.disabled = false;
+    }
+  }
   if (!el) return;
+  if (est === "Ganado") {
+    el.textContent = "Ganada: la probabilidad queda en 100% y el valor esperado es el 100% del valor.";
+    el.style.color = "#15803d";
+    el.style.display = "block";
+    return;
+  }
+  el.style.color = "";
   if (est === "Perdido") {
     el.textContent = "Al guardar como Perdida sale del pipeline activo y su valor esperado queda en $0.";
     el.style.display = "block";
@@ -1550,14 +1585,15 @@ async function guardar() {
   }
 
   const probPct = parseFloat($("pl-c-prob").value);
-  const prob = isNaN(probPct) ? 0 : Math.min(Math.max(probPct, 0), 100) / 100;
+  const probIngresada = isNaN(probPct) ? 0 : Math.min(Math.max(probPct, 0), 100) / 100;
+  // Ganada → 100% del valor · Perdida → 0 · resto → valor × probabilidad
+  const { prob, esperado } = probYEsperado(estado, valor, probIngresada);
   const anioSel = parseInt($("pl-c-anio").value);
   const datos = {
     oportunidad, cuenta, rep, estado,
     valor,
     prob,
-    // Perdida → valor esperado 0 automáticamente
-    esperado: estado === "Perdido" ? 0 : Math.round(valor * prob),
+    esperado,
     tipo: $("pl-c-tipo").value,
     canal: $("pl-c-canal").value.trim(),
     origen: $("pl-c-origen").value.trim(),
@@ -1581,6 +1617,8 @@ async function guardar() {
     cerrarModal();
     toast(estado === "Perdido"
       ? "✓ Marcada como Perdida — salió del pipeline activo"
+      : estado === "Ganado"
+      ? "✓ Marcada como Ganada — valor esperado al 100%"
       : (eraEdicion ? "✓ Oportunidad actualizada" : "✓ Oportunidad creada"));
   }
   else err.textContent = res.error;
@@ -1768,10 +1806,10 @@ async function guardarMasiva() {
       return;
     }
     const proPct = proStr === "" ? 50 : Math.min(Math.max(parseFloat(proStr) || 0, 0), 100);
-    const prob = proPct / 100;
+    const { prob, esperado } = probYEsperado(est, val, proPct / 100);
     porCrear.push({
       oportunidad: opp, cuenta: cta, rep, estado: est,
-      valor: val, prob, esperado: est === "Perdido" ? 0 : Math.round(val * prob),
+      valor: val, prob, esperado,
       // Se crean en el año que se está viendo en pantalla
       mes_radicacion: mes, anio_radicacion: anioVista,
       tipo: "", canal: "", origen: "", riesgo: "", segmento: "", broker: "",

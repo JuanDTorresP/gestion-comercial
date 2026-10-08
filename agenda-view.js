@@ -1,10 +1,11 @@
 // ═══════════════════════════════════════════════════════════
-// agenda-view.js — v4
+// agenda-view.js — v4.1
 // Cambios v4 (oct 2026):
 //  · Elizabeth ya no aparece en la agenda (tarjetas, filtros, gráficas,
 //    listas). Sus gestiones NO se borran de Firestore: solo se ocultan.
 //  · Trazabilidad: si desde una gestión la oportunidad pasa a "Perdido",
 //    su valor esperado queda en 0 (misma regla del pipeline v4).
+//  · v4.1: si pasa a "Ganado", probabilidad 100% y esperado = 100% del valor.
 //  · Las oportunidades creadas desde la agenda quedan con el año de
 //    radicación de la fecha de la gestión (para el selector 2026/27/28).
 // Novedades de la v3 sobre la v2:
@@ -31,6 +32,15 @@ const REPS_BASE = ["Patricia Lopera", "Clemencia Rodriguez", "Ivan Muñoz", "Joh
 const REPS_EXCLUIDOS = ["elizabeth"];
 function normNombre(s) {
   return String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").trim().toLowerCase();
+}
+// Misma regla del pipeline: Ganado → prob 100% y esperado = valor;
+// Perdido → esperado 0; resto → valor × probabilidad.
+function probYEsperado(estado, valor, prob) {
+  const v = parseFloat(valor) || 0;
+  const p = parseFloat(prob) || 0;
+  if (estado === "Ganado") return { prob: 1, esperado: Math.round(v) };
+  if (estado === "Perdido") return { prob: p, esperado: 0 };
+  return { prob: p, esperado: Math.round(v * p) };
 }
 function esRepExcluido(nombre) {
   const primero = normNombre(nombre).split(/\s+/)[0];
@@ -1379,9 +1389,10 @@ async function guardar() {
         return;
       }
       const anioGestion = parseInt(String(fecha).slice(0, 4), 10);
+      const pe = probYEsperado(estado, valor, 0.5);
       const resDeal = await crearDeal({
         oportunidad, cuenta, rep, estado, valor,
-        prob: 0.5, esperado: estado === "Perdido" ? 0 : Math.round(valor * 0.5),
+        prob: pe.prob, esperado: pe.esperado,
         anio_radicacion: isNaN(anioGestion) ? new Date().getFullYear() : anioGestion,
         canal: "", origen: "Agenda Comercial", comentarios: "Creada desde una gestión de la agenda"
       });
@@ -1401,13 +1412,14 @@ async function guardar() {
       if (!isNaN(valor)) cambios.valor = valor;
       const dealActual = deals.find(d => d.id === vinculo);
       if (dealActual) {
-        // Perdida → esperado 0. Si no, valor (nuevo o actual) × probabilidad.
-        // Se recalcula siempre que cambie el estado o el valor, para que una
-        // oportunidad que vuelve de Perdido a activa recupere su esperado.
+        // Ganada → 100% del valor (prob 100%) · Perdida → 0 ·
+        // resto → valor (nuevo o actual) × probabilidad. Se recalcula siempre
+        // que cambie el estado o el valor, igual que en el pipeline.
         const estadoFinal = estado || dealActual.estado;
         const valorFinal = !isNaN(valor) ? valor : (parseFloat(dealActual.valor) || 0);
-        const p = parseFloat(dealActual.prob) || 0;
-        cambios.esperado = estadoFinal === "Perdido" ? 0 : Math.round(valorFinal * p);
+        const pe = probYEsperado(estadoFinal, valorFinal, dealActual.prob);
+        cambios.esperado = pe.esperado;
+        if (estadoFinal === "Ganado") cambios.prob = pe.prob;
       }
       if (Object.keys(cambios).length) {
         const resDeal = await actualizarDeal(vinculo, cambios);
