@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════
-// pipeline-view.js — v4.1
+// pipeline-view.js — v4.2
 // Vista del Pipeline con tres sub-pestañas:
 //   📈 Dashboard      → forecast vs cuota, embudo, pipeline por
 //                       mes, top 10 cuentas y avance de cuota
@@ -14,6 +14,8 @@
 //     (se guarda en 0 y además se fuerza en 0 al leer registros viejos).
 //     v4.1: Ganado → probabilidad 100% y valor esperado = 100% del valor
 //     (formulario, carga masiva, agenda y registros viejos).
+//     v4.2: On hold y Perdido ya no suman en NINGUNA gráfica de composición
+//     (Segmento, Canal, Origen, Top brokers) ni en el total de Cuentas.
 //  2. Dona "Origen": clic en una porción o en un ítem de la leyenda
 //     filtra TODO el dashboard por ese origen (clic de nuevo = quitar).
 //  3. Nueva gráfica "Top 10 cuentas" con el pipeline completo de cada
@@ -481,7 +483,7 @@ function pintarEstructura() {
     <!-- ═══ SUB-VISTA: DASHBOARD ═══ -->
     <div id="pl-sub-dash">
       <div class="m-grid" id="dash-cards"></div>
-      <p class="hint">💡 Haz clic en las tarjetas, el embudo, los motivos o las barras de cuota para ver esas oportunidades. En la dona de Origen, clic en un origen filtra todo el dashboard.</p>
+      <p class="hint">💡 Haz clic en las tarjetas, el embudo, los motivos o las barras de cuota para ver esas oportunidades. En la dona de Origen, clic en un origen filtra todo el dashboard. Segmento, Canal, Origen y Brokers suman pipeline activo + ganado (sin On hold ni Perdidas).</p>
       <div id="dash-salud" style="display:none;cursor:pointer;margin-bottom:16px;background:var(--amber-l);color:#92400e;border-radius:var(--r);padding:12px 16px;font-size:13px;font-weight:500"></div>
       <div class="pl-g2" style="margin-bottom:16px">
         <div class="card" style="margin-bottom:0">
@@ -584,7 +586,7 @@ function pintarEstructura() {
             <thead><tr>
               <th>Cuenta</th>
               <th style="text-align:right">Oportunidades</th>
-              <th style="text-align:right" title="Activo + On hold + Ganado (sin Perdidas)">Valor total</th>
+              <th style="text-align:right" title="Pipeline activo + Ganado (sin On hold ni Perdidas)">Valor total</th>
               <th style="text-align:right">Pipeline activo</th>
               <th style="text-align:right">Esperado</th>
               <th style="text-align:right">Ganado</th>
@@ -1223,9 +1225,13 @@ function renderDashboard() {
   // ── Retail vs Corporativo (campo canal), sobre el universo filtrado ──
   const PALETA_EXTRA = ["#7c3aed", "#0d9488", "#dc2626", "#16a34a", "#6b7280", "#b45309"];
 
+  // Universo de las gráficas de composición (Segmento, Canal, Origen, Brokers):
+  // pipeline activo + ganado. On hold y Perdido NO suman.
+  const vigentes = propios.filter(d => d.estado !== "On hold" && d.estado !== "Perdido");
+
   // ── Segmento: Retail vs Corporativo (campo segmento, tolera que venga en canal) ──
   const bucketsSeg = {};
-  propios.forEach(d => {
+  vigentes.forEach(d => {
     const clave = segmentoDe(d) || "Sin segmento";
     const b = bucketsSeg[clave] = bucketsSeg[clave] || { n: 0, v: 0 };
     b.n++; b.v += parseFloat(d.valor) || 0;
@@ -1259,7 +1265,7 @@ function renderDashboard() {
 
   // ── Canal (Directo / Indirecto), valores tal como están en la base ──
   const bucketsCanal = {};
-  propios.forEach(d => {
+  vigentes.forEach(d => {
     const crudo = String(d.canal || "").trim();
     const clave = crudo || "Sin canal";
     const b = bucketsCanal[clave] = bucketsCanal[clave] || { n: 0, v: 0, crudos: new Set() };
@@ -1295,7 +1301,7 @@ function renderDashboard() {
   // ── Origen de llegada (CRM, Broker, Agenda Comercial...) ──
   // Clic en una porción o en la leyenda → filtra TODO el dashboard (toggle).
   const bucketsOrigen = {};
-  propios.forEach(d => {
+  vigentes.forEach(d => {
     const crudo = String(d.origen || "").trim();
     const clave = crudo || "Sin origen";
     const b = bucketsOrigen[clave] = bucketsOrigen[clave] || { n: 0, v: 0 };
@@ -1339,7 +1345,7 @@ function renderDashboard() {
 
   // ── Top brokers por valor (con clic para ver sus oportunidades) ──
   const brokers = {};
-  propios.forEach(d => {
+  vigentes.forEach(d => {
     const nom = String(d.broker || "").trim();
     if (!nom) return;
     const x = brokers[nom] = brokers[nom] || { n: 0, v: 0 };
@@ -1705,8 +1711,8 @@ function renderCuentas() {
     const m = mapa[k] = mapa[k] || { nombre: raw, n: 0, total: 0, activo: 0, esperado: 0, ganado: 0 };
     const v = parseFloat(d.valor) || 0;
     m.n++;
-    // Valor total = todo menos Perdidas (lo perdido ya no es pipeline)
-    if (d.estado !== "Perdido") m.total += v;
+    // Valor total = activo + ganado (On hold y Perdidas no suman)
+    if (d.estado !== "Perdido" && d.estado !== "On hold") m.total += v;
     if (ESTADOS_ACTIVOS.has(d.estado)) { m.activo += v; m.esperado += esperadoDe(d); }
     if (d.estado === "Ganado") m.ganado += v;
   });
