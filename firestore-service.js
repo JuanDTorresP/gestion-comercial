@@ -200,6 +200,36 @@ export async function actualizarCuentaSprint(id, datos) {
   }
 }
 
+// Reasignar o eliminar varias cuentas a la vez (solo Gerencia).
+// ids = [id, ...]; para reasignar, rep = nombre del nuevo responsable.
+export async function reasignarCuentasSprint(ids, rep) {
+  try {
+    for (let i = 0; i < ids.length; i += 400) {
+      const batch = writeBatch(db);
+      for (const id of ids.slice(i, i + 400)) batch.update(doc(db, "cuentasSprint", id), { rep, actualizadoEn: serverTimestamp() });
+      await batch.commit();
+    }
+    return { ok: true };
+  } catch (error) {
+    console.error("Error reasignando cuentas del sprint:", error);
+    return { ok: false, error: traducirErrorFirestore(error) };
+  }
+}
+
+export async function eliminarCuentasSprint(ids) {
+  try {
+    for (let i = 0; i < ids.length; i += 400) {
+      const batch = writeBatch(db);
+      for (const id of ids.slice(i, i + 400)) batch.delete(doc(db, "cuentasSprint", id));
+      await batch.commit();
+    }
+    return { ok: true };
+  } catch (error) {
+    console.error("Error eliminando cuentas del sprint:", error);
+    return { ok: false, error: traducirErrorFirestore(error) };
+  }
+}
+
 // Carga masiva (solo Gerencia). `items` = [{ id, datos }].
 // Usa merge: no borra lo que los comerciales ya hayan llenado.
 export async function importarCuentasSprint(items) {

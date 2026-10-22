@@ -1,5 +1,7 @@
 // ═══════════════════════════════════════════════════════════
-// sprint-cuentas.js — v1 (oct 2026)
+// sprint-cuentas.js — v1.1 (oct 2026)
+// v1.1: Gerencia puede reasignar y eliminar cuentas, una por una
+//       (desde el ✏️) o varias a la vez (casillas + barra de acciones).
 // Sección "Base instalada · cuentas a recontactar" de la pestaña
 // Sprint. La monta y la alimenta sprint-view.js.
 //
@@ -14,7 +16,8 @@
 // ═══════════════════════════════════════════════════════════
 
 import { esAdmin, obtenerUsuario } from "./auth-service.js";
-import { suscribirCuentasSprint, actualizarCuentaSprint, importarCuentasSprint } from "./firestore-service.js";
+import { suscribirCuentasSprint, actualizarCuentaSprint, importarCuentasSprint,
+  reasignarCuentasSprint, eliminarCuentasSprint } from "./firestore-service.js";
 import { REPS_SPRINT, PASOS_RUTA, SPRINT } from "./sprint-config.js";
 
 export const RESULTADOS = ["Sin respuesta", "Contactado", "Interesado", "Chequeo agendado", "Cotización solicitada",
@@ -27,6 +30,7 @@ let parar = null;
 let ctx = { gestiones: [], filtroRep: "" };
 const f = { texto: "", prioridad: "", avance: "", resultado: "" };
 let editando = null;
+const seleccion = new Set();   // ids marcados por Gerencia
 let limite = 40;   // filas visibles; "Ver más" suma 40
 
 const $ = (id) => document.getElementById(id);
@@ -68,6 +72,12 @@ export function montarCuentas(contenedor) {
       .bi-btn:hover{background:#dbeafe}
       .bi-msg{background:var(--s2);border-radius:8px;padding:10px 12px;font-size:13px;line-height:1.45;color:var(--txt2)}
       #bi-tabla td{vertical-align:top}
+      .bi-bulk{position:sticky;top:60px;z-index:50;display:none;align-items:center;gap:8px;flex-wrap:wrap;background:var(--txt);color:#fff;border-radius:var(--r);padding:10px 14px;margin-bottom:12px;font-size:13px}
+      .bi-bulk.on{display:flex}
+      .bi-bulk select{padding:6px 10px;border-radius:6px;border:none;font-family:inherit;font-size:13px}
+      .bi-bulk button{border:none;border-radius:6px;padding:6px 12px;font-weight:600;font-size:13px;cursor:pointer;font-family:inherit}
+      .bi-bulk .ok{background:var(--blue);color:#fff}.bi-bulk .del{background:#dc2626;color:#fff}.bi-bulk .x{background:rgba(255,255,255,.15);color:#fff}
+      .bi-chk{width:16px;height:16px;cursor:pointer}
     </style>
     <div class="sp-hdr2">
       <div><p class="section-lbl" style="margin:0">Base instalada · cuentas a recontactar</p>
@@ -82,9 +92,17 @@ export function montarCuentas(contenedor) {
       <select class="filtro-select" id="bi-f-res"><option value="">Resultado: todos</option><option value="__vacio">Sin resultado</option>${RESULTADOS.map(r => `<option>${r}</option>`).join("")}</select>
       <span class="filtro-conteo" id="bi-conteo"></span>
     </div>
+    <div class="bi-bulk" id="bi-bulk">
+      <strong id="bi-bulk-n">0 seleccionadas</strong>
+      <span>· Reasignar a</span>
+      <select id="bi-bulk-rep"><option value="">— Elegir comercial —</option>${REPS_SPRINT.map(r => `<option>${r}</option>`).join("")}</select>
+      <button class="ok" id="bi-bulk-asignar">Reasignar</button>
+      <button class="del" id="bi-bulk-borrar">🗑 Eliminar</button>
+      <button class="x" id="bi-bulk-limpiar">Quitar selección</button>
+    </div>
     <div class="card"><div class="tbl-wrap"><table class="tbl" id="bi-tabla">
-      <thead><tr><th></th><th>Cuenta</th><th>Qué se cotizó</th><th>Contacto</th><th>Ruta</th><th>Resultado</th><th></th></tr></thead>
-      <tbody><tr><td colspan="7" class="lista-vacia">Cargando cuentas…</td></tr></tbody></table></div>
+      <thead><tr>${esAdmin() ? `<th><input type="checkbox" class="bi-chk" id="bi-sel-todo" title="Seleccionar las cuentas visibles"/></th>` : ""}<th></th><th>Cuenta</th><th>Qué se cotizó</th><th>Contacto</th><th>Ruta</th><th>Resultado</th><th></th></tr></thead>
+      <tbody><tr><td colspan="8" class="lista-vacia">Cargando cuentas…</td></tr></tbody></table></div>
       <div style="text-align:center;margin-top:10px"><button class="btn-secundario" id="bi-mas" style="display:none">Ver más</button></div></div>
 
     <div class="modal-overlay" id="bi-modal">
@@ -93,6 +111,8 @@ export function montarCuentas(contenedor) {
         <div class="modal-body">
           <div class="bi-msg" id="bi-m-info" style="margin-bottom:14px"></div>
           <div class="form-grid">
+            <div class="form-group full" id="bi-m-rep-wrap" style="display:none"><label class="form-label">Responsable (solo Gerencia)</label>
+              <select class="form-select" id="bi-m-rep">${REPS_SPRINT.map(r => `<option>${r}</option>`).join("")}</select></div>
             <div class="form-group"><label class="form-label">Nombre del contacto</label><input class="form-input" id="bi-m-nombre" maxlength="120"/></div>
             <div class="form-group"><label class="form-label">Cargo</label><input class="form-input" id="bi-m-cargo" maxlength="120"/></div>
             <div class="form-group"><label class="form-label">Correo</label><input class="form-input" id="bi-m-correo" type="email" maxlength="160"/></div>
@@ -105,6 +125,7 @@ export function montarCuentas(contenedor) {
           <div class="login-error" id="bi-m-error"></div>
         </div>
         <div class="modal-footer">
+          <button class="btn-peligro" id="bi-m-eliminar" style="display:none">🗑 Eliminar cuenta</button>
           <button class="btn-secundario" id="bi-m-cancelar">Cancelar</button>
           <button class="btn-primario" id="bi-m-guardar">💾 Guardar</button>
         </div>
@@ -124,17 +145,30 @@ export function montarCuentas(contenedor) {
   $("bi-m-cerrar").addEventListener("click", cerrar);
   $("bi-m-cancelar").addEventListener("click", cerrar);
   $("bi-m-guardar").addEventListener("click", guardar);
+  $("bi-m-eliminar").addEventListener("click", eliminarUna);
+  if (esAdmin()) {
+    $("bi-sel-todo").addEventListener("change", (e) => {
+      document.querySelectorAll("#bi-tabla [data-sel]").forEach(ch => {
+        ch.checked = e.target.checked;
+        e.target.checked ? seleccion.add(ch.dataset.sel) : seleccion.delete(ch.dataset.sel);
+      });
+      pintarBulk();
+    });
+    $("bi-bulk-limpiar").addEventListener("click", () => { seleccion.clear(); render(); });
+    $("bi-bulk-asignar").addEventListener("click", reasignarSeleccion);
+    $("bi-bulk-borrar").addEventListener("click", eliminarSeleccion);
+  }
 
   if (parar) parar();
   parar = suscribirCuentasSprint((lista) => { cuentas = lista; render(); }, () => {
     const tb = $("bi-tabla")?.querySelector("tbody");
-    if (tb) tb.innerHTML = `<tr><td colspan="7" class="lista-vacia">⚠️ No se pudieron leer las cuentas. Revisa que las reglas de Firestore incluyan la colección cuentasSprint.</td></tr>`;
+    if (tb) tb.innerHTML = `<tr><td colspan="8" class="lista-vacia">⚠️ No se pudieron leer las cuentas. Revisa que las reglas de Firestore incluyan la colección cuentasSprint.</td></tr>`;
   });
 }
 
 export function detenerCuentas() {
   if (parar) { parar(); parar = null; }
-  cuentas = []; editando = null; limite = 40;
+  cuentas = []; editando = null; limite = 40; seleccion.clear();
   Object.keys(f).forEach(k => f[k] = "");
 }
 
@@ -180,6 +214,8 @@ function estadoRuta(c, av) {
 function render() {
   const tb = $("bi-tabla")?.querySelector("tbody");
   if (!tb) return;
+  for (const id of [...seleccion]) if (!cuentas.some(c => c.id === id)) seleccion.delete(id);
+  pintarBulk();
   const av = avancePorCuenta();
   const base = cuentas.filter(c => !ctx.filtroRep || c.rep === ctx.filtroRep)
     .map(c => ({ c, r: estadoRuta(c, av.get(norm(c.cuenta))) }));
@@ -210,10 +246,10 @@ function render() {
 
   if (!cuentas.length) {
     $("bi-mas").style.display = "none";
-    tb.innerHTML = `<tr><td colspan="7" class="lista-vacia">${esAdmin() ? "Aún no hay cuentas cargadas. Usa \"📥 Importar cuentas\" con el archivo JSON de la base instalada." : "Gerencia aún no ha cargado las cuentas de base instalada."}</td></tr>`;
+    tb.innerHTML = `<tr><td colspan="8" class="lista-vacia">${esAdmin() ? "Aún no hay cuentas cargadas. Usa \"📥 Importar cuentas\" con el archivo JSON de la base instalada." : "Gerencia aún no ha cargado las cuentas de base instalada."}</td></tr>`;
     return;
   }
-  if (!lista.length) { $("bi-mas").style.display = "none"; tb.innerHTML = `<tr><td colspan="7" class="lista-vacia">Ninguna cuenta coincide con los filtros.</td></tr>`; return; }
+  if (!lista.length) { $("bi-mas").style.display = "none"; tb.innerHTML = `<tr><td colspan="8" class="lista-vacia">Ninguna cuenta coincide con los filtros.</td></tr>`; return; }
 
   const pill = { vencido: ["sp-bad", "Vencido"], hoy: ["sp-warn", "Hoy"], curso: ["sp-neu", "En ruta"], pendiente: ["sp-neu", "Sin iniciar"], completa: ["sp-ok", "Ruta completa"] };
   const restantes = lista.length - limite;
@@ -230,6 +266,7 @@ function render() {
     const sig = r.codigo === "completa" ? "" : `<div class="bi-sub">${PASOS_RUTA[r.idx]} · ${fmtD(r.vence)}</div>`;
     const editable = puedeEditar(c);
     return `<tr>
+      ${esAdmin() ? `<td><input type="checkbox" class="bi-chk" data-sel="${esc(c.id)}" ${seleccion.has(c.id) ? "checked" : ""}/></td>` : ""}
       <td>${prio}</td>
       <td><strong>${esc(c.cuenta)}</strong><div class="bi-sub">${esc(c.rep)} · ${esc(c.estadoCrm || "")}</div></td>
       <td class="bi-cot">${esc(c.queSeCotizo || "Por confirmar")}<div class="bi-sub">${esc(c.aniosCotizados || "")}${c.fechaCotizacion ? ` · última: ${fmtD(c.fechaCotizacion)}` : ""}</div></td>
@@ -250,6 +287,57 @@ function render() {
     }));
   }));
   tb.querySelectorAll("[data-ver]").forEach(b => b.addEventListener("click", () => abrir(b.dataset.ver)));
+  tb.querySelectorAll("[data-sel]").forEach(ch => ch.addEventListener("change", () => {
+    ch.checked ? seleccion.add(ch.dataset.sel) : seleccion.delete(ch.dataset.sel);
+    pintarBulk();
+  }));
+  if ($("bi-sel-todo")) {
+    const vis = [...tb.querySelectorAll("[data-sel]")];
+    $("bi-sel-todo").checked = vis.length > 0 && vis.every(ch => ch.checked);
+  }
+}
+
+// ═══════════════════════════════════════════
+// ACCIONES DE GERENCIA (reasignar / eliminar)
+// ═══════════════════════════════════════════
+function pintarBulk() {
+  const bar = $("bi-bulk"); if (!bar) return;
+  bar.classList.toggle("on", esAdmin() && seleccion.size > 0);
+  $("bi-bulk-n").textContent = `${seleccion.size} seleccionada${seleccion.size === 1 ? "" : "s"}`;
+}
+
+function resumenNombres(ids) {
+  const n = ids.map(id => cuentas.find(c => c.id === id)?.cuenta).filter(Boolean);
+  return n.slice(0, 6).join(", ") + (n.length > 6 ? ` y ${n.length - 6} más` : "");
+}
+
+async function reasignarSeleccion() {
+  const rep = $("bi-bulk-rep").value;
+  if (!rep) { toast("Elige a qué comercial reasignar"); return; }
+  const ids = [...seleccion].filter(id => cuentas.find(c => c.id === id)?.rep !== rep);
+  if (!ids.length) { toast(`Las cuentas seleccionadas ya son de ${rep}`); return; }
+  if (!confirm(`¿Reasignar ${ids.length} cuenta${ids.length === 1 ? "" : "s"} a ${rep}?\n\n${resumenNombres(ids)}\n\nSe conservan el contacto, el resultado, las notas y los pasos ya registrados.`)) return;
+  const res = await reasignarCuentasSprint(ids, rep);
+  if (res.ok) { seleccion.clear(); $("bi-bulk-rep").value = ""; toast(`✓ ${ids.length} cuenta${ids.length === 1 ? "" : "s"} reasignada${ids.length === 1 ? "" : "s"} a ${rep}`); render(); }
+  else toast("⚠️ " + res.error);
+}
+
+async function eliminarSeleccion() {
+  const ids = [...seleccion];
+  if (!ids.length) return;
+  if (!confirm(`¿Eliminar ${ids.length} cuenta${ids.length === 1 ? "" : "s"} de la base instalada?\n\n${resumenNombres(ids)}\n\nSe pierden su contacto, resultado y notas. Las gestiones ya registradas en la Agenda no se borran. Esta acción no se puede deshacer.`)) return;
+  const res = await eliminarCuentasSprint(ids);
+  if (res.ok) { seleccion.clear(); toast(`🗑 ${ids.length} cuenta${ids.length === 1 ? "" : "s"} eliminada${ids.length === 1 ? "" : "s"}`); render(); }
+  else toast("⚠️ " + res.error);
+}
+
+async function eliminarUna() {
+  if (!editando || !esAdmin()) return;
+  const c = editando;
+  if (!confirm(`¿Eliminar la cuenta "${c.cuenta}" de la base instalada?\n\nSe pierden su contacto, resultado y notas. Las gestiones ya registradas en la Agenda no se borran. Esta acción no se puede deshacer.`)) return;
+  const res = await eliminarCuentasSprint([c.id]);
+  if (res.ok) { seleccion.delete(c.id); cerrar(); toast(`🗑 "${c.cuenta}" eliminada`); }
+  else $("bi-m-error").textContent = res.error;
 }
 
 // ═══════════════════════════════════════════
@@ -274,6 +362,9 @@ function abrir(id) {
   set("bi-m-res", c.resultado); set("bi-m-fecha", c.fechaPaso);
   set("bi-m-sig", c.siguientePaso); set("bi-m-notas", c.notas);
   $("bi-m-guardar").style.display = ed ? "" : "none";
+  $("bi-m-rep-wrap").style.display = esAdmin() ? "" : "none";
+  $("bi-m-eliminar").style.display = esAdmin() ? "" : "none";
+  if (esAdmin()) $("bi-m-rep").value = REPS_SPRINT.includes(c.rep) ? c.rep : REPS_SPRINT[0];
   $("bi-m-error").textContent = "";
   $("bi-modal").classList.add("open");
 }
@@ -297,11 +388,13 @@ async function guardar() {
   // Solo se envían los campos que cambiaron (las reglas solo permiten estos).
   const cambios = {};
   for (const k of CAMPOS_EDITABLES) if ((editando[k] || "") !== datos[k]) cambios[k] = datos[k];
+  // Gerencia también puede cambiar el responsable desde aquí.
+  if (esAdmin() && $("bi-m-rep").value && $("bi-m-rep").value !== editando.rep) cambios.rep = $("bi-m-rep").value;
   if (!Object.keys(cambios).length) { cerrar(); return; }
   const btn = $("bi-m-guardar"); btn.disabled = true; btn.textContent = "Guardando...";
   const res = await actualizarCuentaSprint(editando.id, cambios);
   btn.disabled = false; btn.textContent = "💾 Guardar";
-  if (res.ok) { cerrar(); toast("✓ Cuenta actualizada"); }
+  if (res.ok) { cerrar(); toast(cambios.rep ? `✓ Cuenta reasignada a ${cambios.rep}` : "✓ Cuenta actualizada"); }
   else $("bi-m-error").textContent = res.error;
 }
 
