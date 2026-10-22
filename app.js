@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════
-// app.js — Fase 3 completa
+// app.js — Fase 3 completa + pestaña Sprint (oct 2026)
 // Controlador del shell del CRM Famocdepanel.
 //   1. Muestra login o aplicación según la sesión (auth-service)
 //   2. Pinta la barra de navegación con el usuario y su rol
@@ -9,7 +9,8 @@
 
 import { iniciarSesion, cerrarSesion, observarSesion, esAdmin } from "./auth-service.js";
 import { iniciarPipeline, detenerPipeline } from "./pipeline-view.js";
-import { iniciarAgenda, detenerAgenda } from "./agenda-view.js";
+import { iniciarAgenda, detenerAgenda, abrirGestionDesdeSprint } from "./agenda-view.js";
+import { iniciarSprint, detenerSprint } from "./sprint-view.js";
 
 // ───────────────────────────────────────────────
 // Referencias a elementos de la página
@@ -30,6 +31,7 @@ observarSesion((usuario, mensajeError) => {
   } else {
     detenerPipeline();
     detenerAgenda();
+    detenerSprint();
     app.classList.remove("visible");
     pantallaLogin.classList.remove("oculto");
     if (mensajeError) errorLbl.textContent = mensajeError;
@@ -68,6 +70,7 @@ function iniciarShell(usuario) {
   pintarNavUsuario(usuario);
   iniciarPipeline();
   iniciarAgenda();
+  iniciarSprint();
 }
 
 function pintarNavUsuario(usuario) {
@@ -94,7 +97,8 @@ function pintarNavUsuario(usuario) {
 // ───────────────────────────────────────────────
 const tabs = {
   pipeline: { boton: document.getElementById("tab-pipeline"), pagina: document.getElementById("page-pipeline") },
-  agenda:   { boton: document.getElementById("tab-agenda"),   pagina: document.getElementById("page-agenda") }
+  agenda:   { boton: document.getElementById("tab-agenda"),   pagina: document.getElementById("page-agenda") },
+  sprint:   { boton: document.getElementById("tab-sprint"),   pagina: document.getElementById("page-sprint") }
 };
 
 function mostrarTab(nombre) {
@@ -106,3 +110,11 @@ function mostrarTab(nombre) {
 
 tabs.pipeline.boton.addEventListener("click", () => mostrarTab("pipeline"));
 tabs.agenda.boton.addEventListener("click", () => mostrarTab("agenda"));
+tabs.sprint.boton.addEventListener("click", () => mostrarTab("sprint"));
+
+// La pestaña Sprint pide registrar un paso de la ruta → abre la Agenda
+// con el formulario prellenado. (Los módulos no se importan entre sí.)
+document.addEventListener("sprint:registrar-paso", (e) => {
+  mostrarTab("agenda");
+  abrirGestionDesdeSprint(e.detail || {});
+});

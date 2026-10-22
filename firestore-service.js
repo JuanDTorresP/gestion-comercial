@@ -7,6 +7,7 @@
 // Colecciones:
 //   deals     → oportunidades del Pipeline 2026
 //   gestiones → registros de la Agenda Comercial
+//   cuentasSprint → cuentas de base instalada a recontactar (Sprint)
 //
 // Todas las funciones de escritura devuelven { ok, error }.
 // Las suscripciones entregan los datos EN VIVO: cada vez que
@@ -25,7 +26,8 @@ import {
   onSnapshot,
   query,
   orderBy,
-  serverTimestamp
+  serverTimestamp,
+  writeBatch
 } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
 // ───────────────────────────────────────────────
@@ -168,6 +170,50 @@ export async function guardarCuotas(anio, valores) {
     return { ok: true };
   } catch (error) {
     console.error("Error guardando cuotas:", error);
+    return { ok: false, error: traducirErrorFirestore(error) };
+  }
+}
+
+// ───────────────────────────────────────────────
+// SPRINT · BASE INSTALADA (colección: cuentasSprint)
+// Un documento por cuenta. Id = slug del nombre de la cuenta.
+// Reglas: todos leen; solo Gerencia crea/borra; el vendedor
+// asignado (campo "rep") solo edita contacto y seguimiento.
+// ───────────────────────────────────────────────
+
+export function suscribirCuentasSprint(callback, onError) {
+  return onSnapshot(collection(db, "cuentasSprint"), (snap) => {
+    callback(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+  }, (error) => {
+    console.error("Error escuchando cuentasSprint:", error);
+    if (onError) onError(error);
+  });
+}
+
+export async function actualizarCuentaSprint(id, datos) {
+  try {
+    await updateDoc(doc(db, "cuentasSprint", id), { ...datos, actualizadoEn: serverTimestamp() });
+    return { ok: true };
+  } catch (error) {
+    console.error("Error actualizando cuenta del sprint:", error);
+    return { ok: false, error: traducirErrorFirestore(error) };
+  }
+}
+
+// Carga masiva (solo Gerencia). `items` = [{ id, datos }].
+// Usa merge: no borra lo que los comerciales ya hayan llenado.
+export async function importarCuentasSprint(items) {
+  try {
+    for (let i = 0; i < items.length; i += 400) {
+      const batch = writeBatch(db);
+      for (const { id, datos } of items.slice(i, i + 400)) {
+        batch.set(doc(db, "cuentasSprint", id), { ...datos, actualizadoEn: serverTimestamp() }, { merge: true });
+      }
+      await batch.commit();
+    }
+    return { ok: true };
+  } catch (error) {
+    console.error("Error importando cuentas del sprint:", error);
     return { ok: false, error: traducirErrorFirestore(error) };
   }
 }

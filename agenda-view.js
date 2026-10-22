@@ -1,5 +1,15 @@
 // ═══════════════════════════════════════════════════════════
-// agenda-view.js — v4.1
+// agenda-view.js — v4.2
+// Cambios v4.2 (oct 2026) · Sprint de Tracción, Fase 1:
+//  · Bloque opcional "🚀 Sprint de Tracción" en el modal de gestión:
+//    acción del sprint (ruta, chequeo, invitación FLEX, jornada FLEX,
+//    referido), paso de la ruta de 12 días y si hubo decisor.
+//  · Campos nuevos en la gestión: sprintAccion, sprintPaso, sprintDecisor.
+//    `tipo` (Comercial/Operativo) NO cambia: las gráficas siguen iguales.
+//  · Chip "🚀" en la lista de gestiones cuando hay acción del sprint.
+//  · abrirGestionDesdeSprint(): la pestaña Sprint abre este modal ya
+//    prellenado (cuenta, rep, paso de la ruta) para no escribir a mano
+//    el nombre de la cuenta.
 // Cambios v4 (oct 2026):
 //  · Elizabeth ya no aparece en la agenda (tarjetas, filtros, gráficas,
 //    listas). Sus gestiones NO se borran de Firestore: solo se ocultan.
@@ -23,6 +33,7 @@ import {
   suscribirGestiones, crearGestion, actualizarGestion, eliminarGestion,
   suscribirDeals, crearDeal, actualizarDeal
 } from "./firestore-service.js";
+import { ACCIONES_SPRINT, PASOS_RUTA } from "./sprint-config.js";
 
 // ── Constantes de negocio ──
 const REPS_BASE = ["Patricia Lopera", "Clemencia Rodriguez", "Ivan Muñoz", "Johana Mayo"];
@@ -163,12 +174,20 @@ function itemHtml(g) {
           ${chip(g.modalidad, "#FEF3C7", "#b45309")}
           ${chip(g.tipoCliente === "Nuevo" ? "✨ Nuevo" : "", "#CCFBF1", "#0f766e")}
           ${chip(g.dealId ? "🔗 Pipeline" : "", "#EFF6FF", "#1d4ed8")}
+          ${chip(chipSprint(g), "#FEF3C7", "#92400e")}
           <span class="ag-ciudad">📍 ${esc(g.ciudad) || "—"}</span>
         </div>
         ${g.notas ? `<div class="ag-notas">${esc(g.notas)}</div>` : ""}
       </div>
       ${puedeEditar(g) ? `<button class="btn-editar" data-id="${g.id}" title="Editar gestión" aria-label="Editar gestión">✏️</button>` : ""}
     </div>`;
+}
+// Texto del chip del sprint: "🚀 Día 1 · Llamada · decisor" / "🚀 Jornada FLEX"
+function chipSprint(g) {
+  const a = ACCIONES_SPRINT[g.sprintAccion];
+  if (!a) return "";
+  if (g.sprintAccion === "ruta") return "🚀 " + (g.sprintPaso || a.corto) + (g.sprintDecisor ? " · decisor" : "");
+  return "🚀 " + a.corto;
 }
 function activarBotonesEditar(contenedor) {
   contenedor.querySelectorAll(".btn-editar").forEach(btn => {
@@ -276,6 +295,10 @@ function pintarEstructura() {
       .link-box{grid-column:1/-1;background:var(--blue-l);border:1.5px solid #bfdbfe;border-radius:10px;padding:12px}
       .link-box .form-label{color:#1d4ed8}
       .link-nota{font-size:11px;color:#1d4ed8;margin-top:6px}
+      .sprint-box{background:var(--amber-l);border-color:#fde68a}
+      .sprint-box .form-label{color:#92400e}
+      .sprint-check{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;color:#92400e;padding:9px 0;cursor:pointer}
+      .sprint-check input{width:16px;height:16px}
       @media(max-width:820px){.cmp-heads{grid-template-columns:1fr}}
     </style>
 
@@ -491,6 +514,25 @@ function pintarEstructura() {
               </div>
             </div>
 
+            <!-- 🚀 SPRINT DE TRACCIÓN (opcional) -->
+            <div class="link-box sprint-box">
+              <label class="form-label">🚀 Sprint de Tracción (opcional)</label>
+              <select class="form-select" id="ag-c-sprint" style="width:100%">
+                <option value="">— No es una acción del sprint —</option>
+                ${Object.entries(ACCIONES_SPRINT).map(([k, a]) => `<option value="${k}">${a.label}</option>`).join("")}
+              </select>
+              <div id="ag-sprint-ruta" style="display:none;margin-top:10px">
+                <div class="form-grid">
+                  <div class="form-group"><label class="form-label">Paso de la ruta</label>
+                    <select class="form-select" id="ag-c-sprint-paso">
+                      ${PASOS_RUTA.map(p => `<option>${p}</option>`).join("")}
+                    </select></div>
+                  <div class="form-group" style="justify-content:flex-end">
+                    <label class="sprint-check"><input type="checkbox" id="ag-c-sprint-decisor"/> Hubo conversación con el decisor</label></div>
+                </div>
+              </div>
+            </div>
+
             <div class="form-group full"><label class="form-label">Descripción / Notas</label>
               <textarea class="form-input" id="ag-c-notas" rows="3" maxlength="500" placeholder="¿Qué pasó en la visita?"></textarea></div>
           </div>
@@ -543,6 +585,7 @@ function pintarEstructura() {
     if (!esComercial) { $("ag-c-etapa").value = ""; $("ag-c-deal").value = ""; alCambiarDeal(); }
   });
   $("ag-c-etapa").addEventListener("change", sugerirEstadoDesdeEtapa);
+  $("ag-c-sprint").addEventListener("change", alCambiarSprint);
   $("ag-c-deal").addEventListener("change", alCambiarDeal);
 
   // Filtros del mensual
@@ -1331,6 +1374,11 @@ function abrirModal(g) {
   $("ag-etapa-wrap").style.display = esComercial ? "flex" : "none";
   $("ag-c-etapa").value = esComercial ? etapaDe(g) : "";
   $("ag-c-notas").value = g?.notas || "";
+  // Sprint de Tracción
+  $("ag-c-sprint").value = ACCIONES_SPRINT[g?.sprintAccion] ? g.sprintAccion : "";
+  $("ag-c-sprint-paso").value = PASOS_RUTA.includes(g?.sprintPaso) ? g.sprintPaso : PASOS_RUTA[0];
+  $("ag-c-sprint-decisor").checked = !!g?.sprintDecisor;
+  alCambiarSprint();
   $("ag-btn-eliminar").style.display = (g && esAdmin()) ? "inline-block" : "none";
 
   // Trazabilidad
@@ -1340,6 +1388,27 @@ function abrirModal(g) {
   alCambiarDeal();
 
   $("ag-modal").classList.add("open");
+}
+
+// Llamado desde app.js cuando la pestaña Sprint pide registrar un paso.
+// datos = { cuenta, rep, paso, oportunidad }
+export function abrirGestionDesdeSprint(datos) {
+  if (!$("ag-modal")) return;
+  abrirModal(null);
+  $("ag-c-cuenta").value = datos.cuenta || "";
+  $("ag-c-oportunidad").value = datos.oportunidad || "Recontacto base instalada";
+  $("ag-c-tipoCliente").value = "Existente";
+  $("ag-c-tipo").value = "Comercial";
+  $("ag-c-tipo").dispatchEvent(new Event("change"));
+  $("ag-c-etapa").value = "Seguimiento";
+  if (esAdmin() && datos.rep) $("ag-c-rep").value = datos.rep;
+  $("ag-c-sprint").value = "ruta";
+  if (PASOS_RUTA.includes(datos.paso)) $("ag-c-sprint-paso").value = datos.paso;
+  alCambiarSprint();
+}
+
+function alCambiarSprint() {
+  $("ag-sprint-ruta").style.display = $("ag-c-sprint").value === "ruta" ? "block" : "none";
 }
 
 function cerrarModal() {
@@ -1362,6 +1431,7 @@ async function guardar() {
   const modalidad = $("ag-c-modalidad").value;
   const tipo = $("ag-c-tipo").value;
   const etapa = $("ag-c-etapa").value;
+  const sprintAccion = $("ag-c-sprint").value;
 
   if (!rep || !ciudad || !fecha || !cuenta || !oportunidad || !tipoCliente || !canal || !modalidad || !tipo) {
     err.textContent = "Completa todos los campos obligatorios (*).";
@@ -1440,6 +1510,9 @@ async function guardar() {
       etapaVenta: tipo === "Comercial" ? etapa : "",
       notas: $("ag-c-notas").value.trim(),
       dealId: dealId,
+      sprintAccion: sprintAccion,
+      sprintPaso: sprintAccion === "ruta" ? $("ag-c-sprint-paso").value : "",
+      sprintDecisor: sprintAccion === "ruta" ? $("ag-c-sprint-decisor").checked : false,
       ts: new Date().toISOString()
     };
     const eraEdicion = !!editandoId;
