@@ -1,5 +1,11 @@
 // ═══════════════════════════════════════════════════════════
-// sprint-cuentas.js — v1.1 (oct 2026)
+// sprint-cuentas.js — v1.2 (oct 2026)
+// v1.2: · Calificación rápida "¿Tiene proyecto?" (🎯): Sí / Por definir /
+//         No. Con "Sí" se puede crear la oportunidad en el Pipeline
+//         (Identificado) y la cuenta sale de la ruta. Con "No" (o un
+//         resultado como No interesado / Dato errado) también sale.
+//       · Ruta calculada en sprint-ruta.js: pasos saltados no bloquean y
+//         los vencimientos cuentan desde el último paso real.
 // v1.1: Gerencia puede reasignar y eliminar cuentas, una por una
 //       (desde el ✏️) o varias a la vez (casillas + barra de acciones).
 // Sección "Base instalada · cuentas a recontactar" de la pestaña
@@ -17,12 +23,18 @@
 
 import { esAdmin, obtenerUsuario } from "./auth-service.js";
 import { suscribirCuentasSprint, actualizarCuentaSprint, importarCuentasSprint,
-  reasignarCuentasSprint, eliminarCuentasSprint } from "./firestore-service.js";
-import { REPS_SPRINT, PASOS_RUTA, SPRINT } from "./sprint-config.js";
+  reasignarCuentasSprint, eliminarCuentasSprint, crearDeal } from "./firestore-service.js";
+import { REPS_SPRINT, PASOS_RUTA } from "./sprint-config.js";
+import { agruparRuta, estadoRuta as calcRuta, pasosHtml } from "./sprint-ruta.js";
 
 export const RESULTADOS = ["Sin respuesta", "Contactado", "Interesado", "Chequeo agendado", "Cotización solicitada",
   "No interesado", "Dato errado", "Ya no existe"];
-const CAMPOS_EDITABLES = ["contactoNombre", "contactoCargo", "contactoCorreo", "contactoTelefono", "resultado", "siguientePaso", "fechaPaso", "notas"];
+const CAMPOS_EDITABLES = ["contactoNombre", "contactoCargo", "contactoCorreo", "contactoTelefono", "resultado", "siguientePaso", "fechaPaso", "notas",
+  "proyecto", "proyectoDetalle", "proyectoMes", "proyectoValor", "fechaCalificacion"];
+// Resultados que sacan la cuenta de la ruta (no hay a quién seguir llamando).
+const RESULTADOS_CIERRAN = ["No interesado", "Dato errado", "Ya no existe"];
+const PROYECTO_TXT = { si: "✅ Tiene proyecto", luego: "⏳ Por definir", no: "Sin proyecto" };
+const MESES = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
 const PLAN_KEYS = ["planDia1", "planDia2", "planDia5", "planDia8", "planDia12"];
 
 let cuentas = [];
@@ -30,6 +42,7 @@ let parar = null;
 let ctx = { gestiones: [], filtroRep: "" };
 const f = { texto: "", prioridad: "", avance: "", resultado: "" };
 let editando = null;
+let proyectoSel = "";   // valor elegido en el modal: "si" | "luego" | "no" | ""
 const seleccion = new Set();   // ids marcados por Gerencia
 let limite = 40;   // filas visibles; "Ver más" suma 40
 
@@ -72,6 +85,14 @@ export function montarCuentas(contenedor) {
       .bi-btn:hover{background:#dbeafe}
       .bi-msg{background:var(--s2);border-radius:8px;padding:10px 12px;font-size:13px;line-height:1.45;color:var(--txt2)}
       #bi-tabla td{vertical-align:top}
+      .bi-calif{border:1.5px solid #bfdbfe;background:var(--blue-l);border-radius:10px;padding:12px;margin-bottom:14px}
+      .bi-calif .form-label{color:#1d4ed8}
+      .bi-seg{display:flex;gap:6px;flex-wrap:wrap}
+      .bi-seg button{flex:1;min-width:150px;padding:9px 10px;border-radius:8px;border:1.5px solid #e5e5e3;background:#fff;font-family:inherit;font-size:13px;font-weight:600;cursor:pointer;color:var(--txt)}
+      .bi-seg button[aria-pressed="true"]{border-color:var(--blue);background:var(--blue);color:#fff}
+      .bi-seg button:disabled{cursor:not-allowed;opacity:.7}
+      .sprint-check{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;padding:8px 0 0;cursor:pointer}
+      .sprint-check input{width:16px;height:16px}
       .bi-bulk{position:sticky;top:60px;z-index:50;display:none;align-items:center;gap:8px;flex-wrap:wrap;background:var(--txt);color:#fff;border-radius:var(--r);padding:10px 14px;margin-bottom:12px;font-size:13px}
       .bi-bulk.on{display:flex}
       .bi-bulk select{padding:6px 10px;border-radius:6px;border:none;font-family:inherit;font-size:13px}
@@ -88,7 +109,7 @@ export function montarCuentas(contenedor) {
     <div class="bi-tools">
       <input class="filtro-input" id="bi-f-texto" placeholder="🔍 Buscar cuenta, contacto o producto…"/>
       <select class="filtro-select" id="bi-f-prio"><option value="">Prioridad: todas</option><option>A</option><option>B</option><option>C</option><option value="En gestión">En gestión</option></select>
-      <select class="filtro-select" id="bi-f-avance"><option value="">Avance: todos</option><option value="pendiente">Sin iniciar</option><option value="vencido">Paso vencido</option><option value="hoy">Paso para hoy</option><option value="curso">En ruta</option><option value="completa">Ruta completa</option></select>
+      <select class="filtro-select" id="bi-f-avance"><option value="">Avance: todos</option><option value="pendiente">Sin iniciar</option><option value="vencido">Paso vencido</option><option value="hoy">Paso para hoy</option><option value="curso">En ruta</option><option value="completa">Ruta completa</option><option value="conproyecto">Con proyecto</option><option value="cerrada">Cerradas (sin proyecto)</option></select>
       <select class="filtro-select" id="bi-f-res"><option value="">Resultado: todos</option><option value="__vacio">Sin resultado</option>${RESULTADOS.map(r => `<option>${r}</option>`).join("")}</select>
       <span class="filtro-conteo" id="bi-conteo"></span>
     </div>
@@ -110,6 +131,24 @@ export function montarCuentas(contenedor) {
         <div class="modal-hdr"><span class="modal-title" id="bi-m-titulo">Cuenta</span><button class="modal-close" id="bi-m-cerrar">×</button></div>
         <div class="modal-body">
           <div class="bi-msg" id="bi-m-info" style="margin-bottom:14px"></div>
+          <div class="bi-calif">
+            <label class="form-label">🎯 ¿El cliente tiene un proyecto?</label>
+            <div class="bi-seg" id="bi-m-proy">
+              <button type="button" data-v="si">✅ Sí, tiene proyecto</button>
+              <button type="button" data-v="luego">⏳ Por definir</button>
+              <button type="button" data-v="no">❌ No tiene proyecto</button>
+            </div>
+            <div class="sp-nota" id="bi-m-proy-nota"></div>
+            <div id="bi-m-proy-si" style="display:none;margin-top:10px">
+              <div class="form-grid">
+                <div class="form-group full"><label class="form-label">¿Qué necesita?</label><input class="form-input" id="bi-m-pdet" maxlength="150" placeholder="Ej. Remodelación piso 3, 80 puestos"/></div>
+                <div class="form-group"><label class="form-label">¿Para cuándo? (mes)</label><input class="form-input" id="bi-m-pmes" type="month"/></div>
+                <div class="form-group"><label class="form-label">Valor estimado (COP)</label><input class="form-input" id="bi-m-pval" type="number" min="0" step="1000000" placeholder="0"/></div>
+              </div>
+              <label class="sprint-check" id="bi-m-deal-wrap" style="color:#1d4ed8"><input type="checkbox" id="bi-m-deal" checked/> Crear la oportunidad en el Pipeline (estado Identificado)</label>
+              <div class="sp-nota" id="bi-m-deal-ok" style="display:none">🔗 Esta cuenta ya tiene su oportunidad en el Pipeline.</div>
+            </div>
+          </div>
           <div class="form-grid">
             <div class="form-group full" id="bi-m-rep-wrap" style="display:none"><label class="form-label">Responsable (solo Gerencia)</label>
               <select class="form-select" id="bi-m-rep">${REPS_SPRINT.map(r => `<option>${r}</option>`).join("")}</select></div>
@@ -146,6 +185,10 @@ export function montarCuentas(contenedor) {
   $("bi-m-cancelar").addEventListener("click", cerrar);
   $("bi-m-guardar").addEventListener("click", guardar);
   $("bi-m-eliminar").addEventListener("click", eliminarUna);
+  $("bi-m-proy").querySelectorAll("button").forEach(b => b.addEventListener("click", () => {
+    proyectoSel = proyectoSel === b.dataset.v ? "" : b.dataset.v;   // clic de nuevo = desmarcar
+    pintarProyecto();
+  }));
   if (esAdmin()) {
     $("bi-sel-todo").addEventListener("change", (e) => {
       document.querySelectorAll("#bi-tabla [data-sel]").forEach(ch => {
@@ -160,7 +203,10 @@ export function montarCuentas(contenedor) {
   }
 
   if (parar) parar();
-  parar = suscribirCuentasSprint((lista) => { cuentas = lista; render(); }, () => {
+  parar = suscribirCuentasSprint((lista) => {
+    cuentas = lista; render();
+    document.dispatchEvent(new CustomEvent("sprint:cuentas-actualizadas"));
+  }, () => {
     const tb = $("bi-tabla")?.querySelector("tbody");
     if (tb) tb.innerHTML = `<tr><td colspan="8" class="lista-vacia">⚠️ No se pudieron leer las cuentas. Revisa que las reglas de Firestore incluyan la colección cuentasSprint.</td></tr>`;
   });
@@ -172,6 +218,10 @@ export function detenerCuentas() {
   Object.keys(f).forEach(k => f[k] = "");
 }
 
+// Nombres (normalizados) de las cuentas de la base instalada; sprint-view.js
+// los usa para no repetirlas en la tabla "Otras cuentas en ruta".
+export function nombresCuentasBase() { return new Set(cuentas.map(c => norm(c.cuenta))); }
+
 // sprint-view.js llama esto cada vez que cambian gestiones o el filtro de rep.
 export function actualizarContextoCuentas(gestiones, filtroRep) {
   ctx = { gestiones, filtroRep };
@@ -181,31 +231,14 @@ export function actualizarContextoCuentas(gestiones, filtroRep) {
 // ═══════════════════════════════════════════
 // CÁLCULO DE AVANCE (desde las gestiones de la Agenda)
 // ═══════════════════════════════════════════
-function avancePorCuenta() {
-  const m = new Map();
-  for (const g of ctx.gestiones) {
-    if (g.sprintAccion !== "ruta" || !g.fecha || g.fecha < SPRINT.inicio || g.fecha > SPRINT.fin) continue;
-    const k = norm(g.cuenta);
-    if (!m.has(k)) m.set(k, { hechos: new Set(), dec: new Set(), ultimo: "" });
-    const a = m.get(k);
-    a.hechos.add(g.sprintPaso);
-    if (g.sprintDecisor) a.dec.add(g.sprintPaso);
-    if (g.fecha > a.ultimo) a.ultimo = g.fecha;
-  }
-  return m;
-}
+function avancePorCuenta() { return agruparRuta(ctx.gestiones); }
 
+// Estado de la cuenta: primero la calificación, luego la ruta.
 function estadoRuta(c, av) {
-  const hechos = av?.hechos || new Set();
-  const idx = PASOS_RUTA.findIndex(p => !hechos.has(p));
-  const completa = idx === -1 || hechos.has(PASOS_RUTA[PASOS_RUTA.length - 1]);
-  if (completa) return { codigo: "completa", idx: -1, hechos, dec: av?.dec || new Set() };
-  const vence = c[PLAN_KEYS[idx]] || "";
-  const t = hoy();
-  let codigo = hechos.size ? "curso" : "pendiente";
-  if (vence && vence < t) codigo = "vencido";
-  else if (vence === t) codigo = "hoy";
-  return { codigo, idx, vence, hechos, dec: av?.dec || new Set() };
+  const r = calcRuta(av, c.planDia1);
+  if (c.proyecto === "si") return { ...r, codigo: "conproyecto" };
+  if (c.proyecto === "no" || RESULTADOS_CIERRAN.includes(c.resultado)) return { ...r, codigo: "cerrada" };
+  return r;
 }
 
 // ═══════════════════════════════════════════
@@ -225,13 +258,14 @@ function render() {
   const tile = (lbl, v, sub) => `<div class="m-card"><div class="m-lbl">${lbl}</div><div class="m-val">${v}</div><div class="m-sub">${sub}</div></div>`;
   $("bi-tiles").innerHTML =
     tile("Cuentas asignadas", base.length, `${n(x => x.c.prioridad === "A")} de prioridad A`) +
-    tile("En ruta", n(x => x.r.hechos.size > 0), `${n(x => x.r.codigo === "completa")} con ruta completa`) +
+    tile("En ruta", n(x => x.r.hechos.size > 0 && ["curso", "hoy", "vencido"].includes(x.r.codigo)), `${n(x => x.r.codigo === "completa")} con ruta completa`) +
     tile("Pasos vencidos", n(x => x.r.codigo === "vencido"), `${n(x => x.r.codigo === "hoy")} para hoy`) +
+    tile("Con proyecto", n(x => x.c.proyecto === "si"), `${n(x => x.c.proyecto === "luego")} por definir · ${n(x => x.r.codigo === "cerrada")} cerradas`) +
     tile("Con dato de contacto", n(x => x.c.contactoCorreo || x.c.contactoTelefono), `${n(x => !x.c.contactoCorreo && !x.c.contactoTelefono)} sin contacto`);
 
   // Filtros
   const q = norm(f.texto);
-  const orden = { vencido: 0, hoy: 1, curso: 2, pendiente: 3, completa: 4 };
+  const orden = { vencido: 0, hoy: 1, curso: 2, pendiente: 3, completa: 4, conproyecto: 5, cerrada: 6 };
   const prioOrden = { "En gestión": 0, A: 1, B: 2, C: 3 };
   const lista = base.filter(({ c, r }) =>
     (!f.prioridad || c.prioridad === f.prioridad) &&
@@ -251,7 +285,8 @@ function render() {
   }
   if (!lista.length) { $("bi-mas").style.display = "none"; tb.innerHTML = `<tr><td colspan="8" class="lista-vacia">Ninguna cuenta coincide con los filtros.</td></tr>`; return; }
 
-  const pill = { vencido: ["sp-bad", "Vencido"], hoy: ["sp-warn", "Hoy"], curso: ["sp-neu", "En ruta"], pendiente: ["sp-neu", "Sin iniciar"], completa: ["sp-ok", "Ruta completa"] };
+  const pill = { vencido: ["sp-bad", "Vencido"], hoy: ["sp-warn", "Hoy"], curso: ["sp-neu", "En ruta"], pendiente: ["sp-neu", "Sin iniciar"],
+    completa: ["sp-ok", "Ruta completa"], conproyecto: ["sp-ok", "✅ Con proyecto"], cerrada: ["sp-neu", "Cerrada"] };
   const restantes = lista.length - limite;
   $("bi-mas").style.display = restantes > 0 ? "" : "none";
   $("bi-mas").textContent = `Ver más (${restantes} restantes)`;
@@ -262,8 +297,9 @@ function render() {
           ${c.contactoCorreo ? `<br><a href="mailto:${esc(c.contactoCorreo)}">${esc(c.contactoCorreo)}</a>` : ""}
           ${c.contactoTelefono ? `<br>${esc(c.contactoTelefono)}` : ""}</div>`
       : `<span class="bi-falta">Falta contacto</span>`;
-    const pasos = `<div class="sp-pasos">${PASOS_RUTA.map(p => `<span class="sp-paso${r.hechos.has(p) ? " ok" : ""}${r.dec.has(p) ? " dec" : ""}" title="${p}">${p.match(/\d+/)[0]}</span>`).join("")}</div>`;
-    const sig = r.codigo === "completa" ? "" : `<div class="bi-sub">${PASOS_RUTA[r.idx]} · ${fmtD(r.vence)}</div>`;
+    const pasos = pasosHtml(r);
+    const activa = !["completa", "conproyecto", "cerrada"].includes(r.codigo);
+    const sig = activa && r.idx >= 0 ? `<div class="bi-sub">${PASOS_RUTA[r.idx]} · ${fmtD(r.vence)}</div>` : "";
     const editable = puedeEditar(c);
     return `<tr>
       ${esAdmin() ? `<td><input type="checkbox" class="bi-chk" data-sel="${esc(c.id)}" ${seleccion.has(c.id) ? "checked" : ""}/></td>` : ""}
@@ -272,9 +308,10 @@ function render() {
       <td class="bi-cot">${esc(c.queSeCotizo || "Por confirmar")}<div class="bi-sub">${esc(c.aniosCotizados || "")}${c.fechaCotizacion ? ` · última: ${fmtD(c.fechaCotizacion)}` : ""}</div></td>
       <td>${contacto}</td>
       <td>${pasos}${sig}<div style="margin-top:4px"><span class="sp-pill ${pill[r.codigo][0]}">${pill[r.codigo][1]}</span></div></td>
-      <td><div style="font-size:12px">${esc(c.resultado) || "—"}</div>${c.siguientePaso ? `<div class="bi-sub">${esc(c.siguientePaso)}${c.fechaPaso ? ` · ${fmtD(c.fechaPaso)}` : ""}</div>` : ""}</td>
+      <td>${c.proyecto ? `<div style="font-size:12px;font-weight:600">${PROYECTO_TXT[c.proyecto] || ""}${c.proyecto === "si" && c.proyectoDetalle ? `: ${esc(c.proyectoDetalle)}` : ""}</div>` : ""}<div style="font-size:12px">${esc(c.resultado) || (c.proyecto ? "" : "—")}</div>${c.siguientePaso ? `<div class="bi-sub">${esc(c.siguientePaso)}${c.fechaPaso ? ` · ${fmtD(c.fechaPaso)}` : ""}</div>` : ""}</td>
       <td><div class="bi-acc">
-        ${editable && r.codigo !== "completa" ? `<button class="bi-btn" data-paso="${esc(c.id)}" title="Registrar en la Agenda: ${esc(PASOS_RUTA[r.idx] || "")}">🚀 Paso</button>` : ""}
+        ${editable && activa ? `<button class="bi-btn" data-paso="${esc(c.id)}" title="Registrar en la Agenda: ${esc(PASOS_RUTA[r.idx] || "")}">🚀 Paso</button>` : ""}
+        ${editable ? `<button class="bi-btn" data-calif="${esc(c.id)}" title="¿Tiene proyecto? Calificar la cuenta">🎯</button>` : ""}
         <button class="bi-btn" data-ver="${esc(c.id)}" title="${editable ? "Editar contacto y seguimiento" : "Ver detalle"}">${editable ? "✏️" : "👁"}</button>
       </div></td></tr>`;
   }).join("");
@@ -287,6 +324,7 @@ function render() {
     }));
   }));
   tb.querySelectorAll("[data-ver]").forEach(b => b.addEventListener("click", () => abrir(b.dataset.ver)));
+  tb.querySelectorAll("[data-calif]").forEach(b => b.addEventListener("click", () => abrir(b.dataset.calif)));
   tb.querySelectorAll("[data-sel]").forEach(ch => ch.addEventListener("change", () => {
     ch.checked ? seleccion.add(ch.dataset.sel) : seleccion.delete(ch.dataset.sel);
     pintarBulk();
@@ -361,6 +399,11 @@ function abrir(id) {
   set("bi-m-correo", c.contactoCorreo); set("bi-m-tel", c.contactoTelefono);
   set("bi-m-res", c.resultado); set("bi-m-fecha", c.fechaPaso);
   set("bi-m-sig", c.siguientePaso); set("bi-m-notas", c.notas);
+  proyectoSel = c.proyecto || "";
+  set("bi-m-pdet", c.proyectoDetalle); set("bi-m-pmes", c.proyectoMes); set("bi-m-pval", c.proyectoValor);
+  $("bi-m-proy").querySelectorAll("button").forEach(b => b.disabled = !ed);
+  $("bi-m-deal").checked = !c.dealId; $("bi-m-deal").disabled = !ed;
+  pintarProyecto();
   $("bi-m-guardar").style.display = ed ? "" : "none";
   $("bi-m-rep-wrap").style.display = esAdmin() ? "" : "none";
   $("bi-m-eliminar").style.display = esAdmin() ? "" : "none";
@@ -368,6 +411,20 @@ function abrir(id) {
   $("bi-m-error").textContent = "";
   $("bi-modal").classList.add("open");
 }
+function pintarProyecto() {
+  $("bi-m-proy").querySelectorAll("button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.v === proyectoSel)));
+  $("bi-m-proy-si").style.display = proyectoSel === "si" ? "" : "none";
+  const tieneDeal = !!editando?.dealId;
+  $("bi-m-deal-wrap").style.display = tieneDeal ? "none" : "";
+  $("bi-m-deal-ok").style.display = tieneDeal ? "" : "none";
+  $("bi-m-proy-nota").textContent = {
+    si: "La cuenta sale de la ruta de contacto y queda como \"Con proyecto\".",
+    luego: "La cuenta sigue en la ruta. Anota abajo el siguiente paso y su fecha.",
+    no: "La cuenta sale de la ruta. Si quieres retomarla más adelante, anota la fecha en \"Siguiente paso\".",
+    "": ""
+  }[proyectoSel];
+}
+
 function cerrar() { $("bi-modal").classList.remove("open"); editando = null; }
 
 async function guardar() {
@@ -380,21 +437,45 @@ async function guardar() {
     resultado: $("bi-m-res").value,
     siguientePaso: $("bi-m-sig").value.trim(),
     fechaPaso: $("bi-m-fecha").value,
-    notas: $("bi-m-notas").value.trim()
+    notas: $("bi-m-notas").value.trim(),
+    proyecto: proyectoSel,
+    proyectoDetalle: proyectoSel === "si" ? $("bi-m-pdet").value.trim() : (editando.proyectoDetalle || ""),
+    proyectoMes: proyectoSel === "si" ? $("bi-m-pmes").value : (editando.proyectoMes || ""),
+    proyectoValor: proyectoSel === "si" ? $("bi-m-pval").value : (editando.proyectoValor || ""),
+    fechaCalificacion: proyectoSel !== (editando.proyecto || "") ? (proyectoSel ? hoy() : "") : (editando.fechaCalificacion || "")
   };
+  const crearOpp = proyectoSel === "si" && !editando.dealId && $("bi-m-deal").checked;
+  if (crearOpp && (!datos.proyectoDetalle || !datos.proyectoMes || !(parseFloat(datos.proyectoValor) > 0))) {
+    $("bi-m-error").textContent = "Para crear la oportunidad en el Pipeline completa qué necesita, el mes y el valor estimado (o desmarca la casilla).";
+    return;
+  }
   if (datos.contactoCorreo && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(datos.contactoCorreo)) {
     $("bi-m-error").textContent = "El correo no tiene un formato válido."; return;
   }
   // Solo se envían los campos que cambiaron (las reglas solo permiten estos).
   const cambios = {};
-  for (const k of CAMPOS_EDITABLES) if ((editando[k] || "") !== datos[k]) cambios[k] = datos[k];
+  for (const k of CAMPOS_EDITABLES) if (String(editando[k] ?? "") !== String(datos[k] ?? "")) cambios[k] = datos[k];
   // Gerencia también puede cambiar el responsable desde aquí.
   if (esAdmin() && $("bi-m-rep").value && $("bi-m-rep").value !== editando.rep) cambios.rep = $("bi-m-rep").value;
-  if (!Object.keys(cambios).length) { cerrar(); return; }
+  if (!Object.keys(cambios).length && !crearOpp) { cerrar(); return; }
   const btn = $("bi-m-guardar"); btn.disabled = true; btn.textContent = "Guardando...";
+  if (crearOpp) {
+    // Oportunidad nueva en el Pipeline, a nombre del responsable de la cuenta.
+    const [anio, mes] = datos.proyectoMes.split("-").map(Number);
+    const valor = parseFloat(datos.proyectoValor), prob = 0.2;
+    const rd = await crearDeal({
+      oportunidad: datos.proyectoDetalle, cuenta: editando.cuenta, rep: editando.rep, estado: "Identificado",
+      valor, prob, esperado: Math.round(valor * prob),
+      mes_radicacion: MESES[mes - 1] || "", anio_radicacion: anio || new Date().getFullYear(),
+      tipo: "", canal: "Corporativo", origen: "Sprint · Base instalada", riesgo: "", segmento: "", broker: "",
+      mes_inicio: "", motivo_perdida: "", comentarios: "Creada desde la calificación de la base instalada (Sprint de Tracción)"
+    });
+    if (!rd.ok) { btn.disabled = false; btn.textContent = "💾 Guardar"; $("bi-m-error").textContent = "No se pudo crear la oportunidad: " + rd.error; return; }
+    cambios.dealId = rd.id;
+  }
   const res = await actualizarCuentaSprint(editando.id, cambios);
   btn.disabled = false; btn.textContent = "💾 Guardar";
-  if (res.ok) { cerrar(); toast(cambios.rep ? `✓ Cuenta reasignada a ${cambios.rep}` : "✓ Cuenta actualizada"); }
+  if (res.ok) { cerrar(); toast(cambios.dealId ? "✓ Cuenta calificada · oportunidad creada en el Pipeline" : cambios.rep ? `✓ Cuenta reasignada a ${cambios.rep}` : "✓ Cuenta actualizada"); }
   else $("bi-m-error").textContent = res.error;
 }
 

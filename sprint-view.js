@@ -9,6 +9,10 @@
 //
 // v1.1: sección "Base instalada · cuentas a recontactar"
 // (sprint-cuentas.js, colección cuentasSprint).
+// v1.2: la tabla de ruta solo muestra cuentas que NO están en la base
+// instalada (antes se repetían). Cálculo de la ruta en sprint-ruta.js:
+// pasos saltados no bloquean y los vencimientos cuentan desde el último
+// paso real.
 //
 // Fase 2 sumará la calificación de oportunidades (deals) y
 // Fase 3 los rituales y la cosecha.
@@ -17,15 +21,15 @@
 import { esAdmin, obtenerUsuario } from "./auth-service.js";
 import { suscribirGestiones } from "./firestore-service.js";
 import { SPRINT, REPS_SPRINT, ACCIONES_SPRINT, PASOS_RUTA, METAS } from "./sprint-config.js";
-import { montarCuentas, detenerCuentas, actualizarContextoCuentas } from "./sprint-cuentas.js";
+import { montarCuentas, detenerCuentas, actualizarContextoCuentas, nombresCuentasBase } from "./sprint-cuentas.js";
+import { agruparRuta, estadoRuta, pasosHtml } from "./sprint-ruta.js";
 
-// Días (desde el primer paso) en que vence cada paso de la ruta.
-const OFFSET_PASO = [0, 1, 4, 7, 11];
 
 let gestiones = [];
 let parar = null;
 let montado = false;
 let filtroRep = "";
+let escuchandoCuentas = false;
 
 // ── Utilidades ──
 const $ = (id) => document.getElementById(id);
@@ -98,6 +102,7 @@ function montar(page) {
       .sp-paso{width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;background:var(--s2);color:var(--txt3)}
       .sp-paso.ok{background:var(--blue);color:#fff}
       .sp-paso.dec{box-shadow:0 0 0 2px #16a34a}
+      .sp-paso.salt{background:transparent;border:1.5px dashed var(--txt3);color:var(--txt3);text-decoration:line-through}
       .sp-hdr2{display:flex;justify-content:space-between;align-items:flex-end;gap:10px;flex-wrap:wrap;margin-bottom:12px}
       .sp-nota{font-size:12px;color:var(--txt3);margin-top:4px}
       @media(max-width:560px){.sp-frow{grid-template-columns:105px 1fr 58px}}
@@ -140,17 +145,22 @@ function montar(page) {
       <tbody></tbody></table></div>
       <div class="sp-nota">Acumulado del sprint · entre paréntesis, lo de esta semana.</div></div>
 
-    <div class="sp-hdr2">
-      <div><p class="section-lbl" style="margin:0">Ruta de contacto por cuenta</p>
-        <div class="sp-nota">Para el stand-up: cada círculo es un paso (1 · 2 · 5 · 8 · 12). Borde verde = hubo decisor. El siguiente paso vence contando desde el Día 1.</div></div>
-    </div>
-    <div class="card"><div class="tbl-wrap"><table class="tbl" id="sp-ruta">
-      <thead><tr><th>Cuenta</th><th>Rep</th><th>Pasos</th><th>Último</th><th>Siguiente paso</th><th class="sp-num">Estado</th></tr></thead>
-      <tbody></tbody></table></div></div>
-
     <div id="sp-cuentas" style="margin-top:8px"></div>
+
+    <div id="sp-ruta-wrap" style="display:none">
+      <div class="sp-hdr2">
+        <div><p class="section-lbl" style="margin:0">Otras cuentas en ruta (fuera de la base instalada)</p>
+          <div class="sp-nota">Cuentas con pasos de ruta registrados en la Agenda que no están en la lista de base instalada. Azul = hecho · borde verde = hubo decisor · punteado = paso saltado.</div></div>
+      </div>
+      <div class="card"><div class="tbl-wrap"><table class="tbl" id="sp-ruta">
+        <thead><tr><th>Cuenta</th><th>Rep</th><th>Pasos</th><th>Último</th><th>Siguiente paso</th><th class="sp-num">Estado</th></tr></thead>
+        <tbody></tbody></table></div></div>
+    </div>
   `;
   montarCuentas($("sp-cuentas"));
+  // Cuando cargan/cambian las cuentas de base instalada, se recalcula la
+  // tabla "Otras cuentas en ruta" (para no repetir cuentas).
+  if (!escuchandoCuentas) { document.addEventListener("sprint:cuentas-actualizadas", render); escuchandoCuentas = true; }
   $("sp-f-rep").addEventListener("change", (e) => { filtroRep = e.target.value; render(); });
 
   // Un vendedor ve por defecto su propio avance (puede cambiar a "Todo el equipo").
@@ -312,43 +322,22 @@ function renderReps() {
 }
 
 function renderRuta(lista) {
-  const ruta = lista.filter(g => g.sprintAccion === "ruta");
-  const porCuenta = new Map();
-  for (const g of ruta) {
-    const k = norm(g.cuenta) + "|" + g.rep;
-    if (!porCuenta.has(k)) porCuenta.set(k, { cuenta: g.cuenta, rep: g.rep, items: [] });
-    porCuenta.get(k).items.push(g);
-  }
+  // Solo cuentas que NO están en la base instalada (esas ya se ven en su sección).
+  const base = nombresCuentasBase();
+  const grupos = [...agruparRuta(lista).entries()].filter(([k]) => !base.has(k));
+  const orden = { vencido: 0, hoy: 1, curso: 2, pendiente: 2, completa: 3 };
+  const pill = { vencido: null, hoy: ["sp-warn", "Hoy"], curso: ["sp-neu", "En curso"], pendiente: ["sp-neu", "En curso"], completa: ["sp-ok", "Ruta completa"] };
   const t = hoy();
-  const filas = [...porCuenta.values()].map(x => {
-    const hechos = new Set(x.items.map(g => g.sprintPaso));
-    const conDec = new Set(x.items.filter(g => g.sprintDecisor).map(g => g.sprintPaso));
-    const fechas = x.items.map(g => g.fecha).sort();
-    const inicio = (x.items.find(g => g.sprintPaso === PASOS_RUTA[0])?.fecha) || fechas[0];
-    const ultimo = fechas[fechas.length - 1];
-    const idxSig = PASOS_RUTA.findIndex(p => !hechos.has(p));
-    const cerrado = hechos.has(PASOS_RUTA[PASOS_RUTA.length - 1]) || idxSig === -1;
-    const vence = cerrado ? null : addD(inicio, OFFSET_PASO[idxSig]);
-    let estado, orden;
-    if (cerrado) { estado = `<span class="sp-pill sp-ok">Ruta completa</span>`; orden = 3; }
-    else if (vence < t) { estado = `<span class="sp-pill sp-bad">Vencido ${diasEntre(vence, t)} d</span>`; orden = 0; }
-    else if (vence === t) { estado = `<span class="sp-pill sp-warn">Hoy</span>`; orden = 1; }
-    else { estado = `<span class="sp-pill sp-neu">En curso</span>`; orden = 2; }
-    return { x, hechos, conDec, ultimo, idxSig, cerrado, vence, estado, orden };
-  }).sort((a, b) => a.orden - b.orden || String(a.vence).localeCompare(String(b.vence)));
-
-  const tb = $("sp-ruta").querySelector("tbody");
-  if (!filas.length) {
-    tb.innerHTML = `<tr><td colspan="6" class="lista-vacia">Aún no hay cuentas en ruta. En la Agenda, registra una gestión y en "🚀 Sprint de Tracción" elige "Paso de la ruta de contacto" → Día 1 · Llamada.</td></tr>`;
-    return;
-  }
-  tb.innerHTML = filas.map(f => `
-    <tr><td><strong>${esc(f.x.cuenta)}</strong></td><td>${esc(f.x.rep)}</td>
-      <td><div class="sp-pasos">${PASOS_RUTA.map(p => {
-        const n = p.match(/\d+/)[0];
-        return `<span class="sp-paso${f.hechos.has(p) ? " ok" : ""}${f.conDec.has(p) ? " dec" : ""}" title="${p}">${n}</span>`;
-      }).join("")}</div></td>
-      <td>${fmtD(f.ultimo)}</td>
-      <td>${f.cerrado ? "—" : `${PASOS_RUTA[f.idxSig]} · ${fmtD(f.vence)}`}</td>
-      <td class="sp-num">${f.estado}</td></tr>`).join("");
+  const filas = grupos.map(([, a]) => ({ a, r: estadoRuta(a, "") }))
+    .sort((x, y) => orden[x.r.codigo] - orden[y.r.codigo] || String(x.r.vence).localeCompare(String(y.r.vence)));
+  $("sp-ruta-wrap").style.display = filas.length ? "" : "none";
+  $("sp-ruta").querySelector("tbody").innerHTML = filas.map(({ a, r }) => {
+    const p = r.codigo === "vencido" ? ["sp-bad", `Vencido ${diasEntre(r.vence, t)} d`] : pill[r.codigo];
+    return `
+    <tr><td><strong>${esc(a.cuenta)}</strong></td><td>${esc(a.rep)}</td>
+      <td>${pasosHtml(r)}</td>
+      <td>${fmtD(r.ultimo)}</td>
+      <td>${r.codigo === "completa" ? "—" : `${PASOS_RUTA[r.idx]} · ${fmtD(r.vence)}`}</td>
+      <td class="sp-num"><span class="sp-pill ${p[0]}">${p[1]}</span></td></tr>`;
+  }).join("");
 }
