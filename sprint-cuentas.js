@@ -1,5 +1,9 @@
 // ═══════════════════════════════════════════════════════════
-// sprint-cuentas.js — v1.2 (oct 2026)
+// sprint-cuentas.js — v1.3 (oct 2026)
+// v1.3: · Tarjetas clicables: filtran la tabla (como en el Pipeline);
+//         clic de nuevo quita el filtro.
+//       · Clic en el nombre de la cuenta → panel con su historial de
+//         gestiones (evento "sprint:ver-gestiones" que atiende sprint-view).
 // v1.2: · Calificación rápida "¿Tiene proyecto?" (🎯): Sí / Por definir /
 //         No. Con "Sí" se puede crear la oportunidad en el Pipeline
 //         (Identificado) y la cuenta sale de la ruta. Con "No" (o un
@@ -40,7 +44,15 @@ const PLAN_KEYS = ["planDia1", "planDia2", "planDia5", "planDia8", "planDia12"];
 let cuentas = [];
 let parar = null;
 let ctx = { gestiones: [], filtroRep: "" };
-const f = { texto: "", prioridad: "", avance: "", resultado: "" };
+const f = { texto: "", prioridad: "", avance: "", resultado: "", tarjeta: "" };
+// Filtros de las tarjetas (clave → { etiqueta, prueba sobre {c, r} })
+const TARJETAS = {
+  todas:      { t: "Todas", p: () => true },
+  enruta:     { t: "En ruta", p: ({ r }) => r.hechos.size > 0 && ["curso", "hoy", "vencido"].includes(r.codigo) },
+  vencidos:   { t: "Pasos vencidos y para hoy", p: ({ r }) => r.codigo === "vencido" || r.codigo === "hoy" },
+  proyecto:   { t: "Calificadas (con proyecto, por definir o cerradas)", p: ({ c, r }) => !!c.proyecto || r.codigo === "cerrada" },
+  sincontacto:{ t: "Sin dato de contacto", p: ({ c }) => !c.contactoCorreo && !c.contactoTelefono }
+};
 let editando = null;
 let proyectoSel = "";   // valor elegido en el modal: "si" | "luego" | "no" | ""
 const seleccion = new Set();   // ids marcados por Gerencia
@@ -85,6 +97,8 @@ export function montarCuentas(contenedor) {
       .bi-btn:hover{background:#dbeafe}
       .bi-msg{background:var(--s2);border-radius:8px;padding:10px 12px;font-size:13px;line-height:1.45;color:var(--txt2)}
       #bi-tabla td{vertical-align:top}
+      .bi-tile.on{box-shadow:0 0 0 2px var(--blue);background:var(--blue-l)}
+      .bi-chip-f{display:inline-block;background:var(--blue);color:#fff;border-radius:99px;padding:2px 9px;font-weight:600;cursor:pointer}
       .bi-calif{border:1.5px solid #bfdbfe;background:var(--blue-l);border-radius:10px;padding:12px;margin-bottom:14px}
       .bi-calif .form-label{color:#1d4ed8}
       .bi-seg{display:flex;gap:6px;flex-wrap:wrap}
@@ -255,19 +269,26 @@ function render() {
 
   // Tarjetas
   const n = (fn) => base.filter(fn).length;
-  const tile = (lbl, v, sub) => `<div class="m-card"><div class="m-lbl">${lbl}</div><div class="m-val">${v}</div><div class="m-sub">${sub}</div></div>`;
+  const tile = (lbl, v, sub, k) => `<div class="m-card sp-clic bi-tile${f.tarjeta === k ? " on" : ""}" data-tarjeta="${k}" title="${f.tarjeta === k ? "Quitar el filtro" : "Filtrar la tabla"}"><div class="m-lbl">${lbl}</div><div class="m-val">${v}</div><div class="m-sub">${sub}</div></div>`;
   $("bi-tiles").innerHTML =
-    tile("Cuentas asignadas", base.length, `${n(x => x.c.prioridad === "A")} de prioridad A`) +
-    tile("En ruta", n(x => x.r.hechos.size > 0 && ["curso", "hoy", "vencido"].includes(x.r.codigo)), `${n(x => x.r.codigo === "completa")} con ruta completa`) +
-    tile("Pasos vencidos", n(x => x.r.codigo === "vencido"), `${n(x => x.r.codigo === "hoy")} para hoy`) +
-    tile("Con proyecto", n(x => x.c.proyecto === "si"), `${n(x => x.c.proyecto === "luego")} por definir · ${n(x => x.r.codigo === "cerrada")} cerradas`) +
-    tile("Con dato de contacto", n(x => x.c.contactoCorreo || x.c.contactoTelefono), `${n(x => !x.c.contactoCorreo && !x.c.contactoTelefono)} sin contacto`);
+    tile("Cuentas asignadas", base.length, `${n(x => x.c.prioridad === "A")} de prioridad A`, "todas") +
+    tile("En ruta", n(TARJETAS.enruta.p), `${n(x => x.r.codigo === "completa")} con ruta completa`, "enruta") +
+    tile("Pasos vencidos", n(x => x.r.codigo === "vencido"), `${n(x => x.r.codigo === "hoy")} para hoy`, "vencidos") +
+    tile("Con proyecto", n(x => x.c.proyecto === "si"), `${n(x => x.c.proyecto === "luego")} por definir · ${n(x => x.r.codigo === "cerrada")} cerradas`, "proyecto") +
+    tile("Con dato de contacto", n(x => x.c.contactoCorreo || x.c.contactoTelefono), `${n(TARJETAS.sincontacto.p)} sin contacto`, "sincontacto");
+  $("bi-tiles").querySelectorAll("[data-tarjeta]").forEach(t => t.addEventListener("click", () => {
+    const k = t.dataset.tarjeta;
+    f.tarjeta = (f.tarjeta === k || k === "todas") ? "" : k;
+    limite = 40; render();
+  }));
 
   // Filtros
   const q = norm(f.texto);
   const orden = { vencido: 0, hoy: 1, curso: 2, pendiente: 3, completa: 4, conproyecto: 5, cerrada: 6 };
   const prioOrden = { "En gestión": 0, A: 1, B: 2, C: 3 };
+  const filtroTarjeta = TARJETAS[f.tarjeta]?.p || (() => true);
   const lista = base.filter(({ c, r }) =>
+    filtroTarjeta({ c, r }) &&
     (!f.prioridad || c.prioridad === f.prioridad) &&
     (!f.avance || r.codigo === f.avance) &&
     (!f.resultado || (f.resultado === "__vacio" ? !c.resultado : c.resultado === f.resultado)) &&
@@ -276,7 +297,9 @@ function render() {
       || String(a.r.vence || "9").localeCompare(String(b.r.vence || "9"))
       || (prioOrden[a.c.prioridad] ?? 9) - (prioOrden[b.c.prioridad] ?? 9)
       || String(a.c.cuenta).localeCompare(String(b.c.cuenta)));
-  $("bi-conteo").textContent = `${lista.length} de ${base.length} cuentas`;
+  $("bi-conteo").innerHTML = `${lista.length} de ${base.length} cuentas` +
+    (f.tarjeta ? ` · <span class="bi-chip-f" id="bi-quitar-tarjeta" title="Quitar filtro">${TARJETAS[f.tarjeta].t} ✕</span>` : "");
+  $("bi-quitar-tarjeta")?.addEventListener("click", () => { f.tarjeta = ""; render(); });
 
   if (!cuentas.length) {
     $("bi-mas").style.display = "none";
@@ -304,7 +327,7 @@ function render() {
     return `<tr>
       ${esAdmin() ? `<td><input type="checkbox" class="bi-chk" data-sel="${esc(c.id)}" ${seleccion.has(c.id) ? "checked" : ""}/></td>` : ""}
       <td>${prio}</td>
-      <td><strong>${esc(c.cuenta)}</strong><div class="bi-sub">${esc(c.rep)} · ${esc(c.estadoCrm || "")}</div></td>
+      <td><strong class="sp-link" data-hist="${esc(c.cuenta)}" title="Ver el historial de gestiones">${esc(c.cuenta)}</strong><div class="bi-sub">${esc(c.rep)} · ${esc(c.estadoCrm || "")}</div></td>
       <td class="bi-cot">${esc(c.queSeCotizo || "Por confirmar")}<div class="bi-sub">${esc(c.aniosCotizados || "")}${c.fechaCotizacion ? ` · última: ${fmtD(c.fechaCotizacion)}` : ""}</div></td>
       <td>${contacto}</td>
       <td>${pasos}${sig}<div style="margin-top:4px"><span class="sp-pill ${pill[r.codigo][0]}">${pill[r.codigo][1]}</span></div></td>
@@ -324,6 +347,8 @@ function render() {
     }));
   }));
   tb.querySelectorAll("[data-ver]").forEach(b => b.addEventListener("click", () => abrir(b.dataset.ver)));
+  tb.querySelectorAll("[data-hist]").forEach(b => b.addEventListener("click", () =>
+    document.dispatchEvent(new CustomEvent("sprint:ver-gestiones", { detail: { cuenta: b.dataset.hist } }))));
   tb.querySelectorAll("[data-calif]").forEach(b => b.addEventListener("click", () => abrir(b.dataset.calif)));
   tb.querySelectorAll("[data-sel]").forEach(ch => ch.addEventListener("change", () => {
     ch.checked ? seleccion.add(ch.dataset.sel) : seleccion.delete(ch.dataset.sel);

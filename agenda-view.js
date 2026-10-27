@@ -7,6 +7,8 @@
 //  · Campos nuevos en la gestión: sprintAccion, sprintPaso, sprintDecisor.
 //    `tipo` (Comercial/Operativo) NO cambia: las gráficas siguen iguales.
 //  · Chip "🚀" en la lista de gestiones cuando hay acción del sprint.
+//  · v4.3: abrirGestionPorId(): el panel de gestiones de la pestaña
+//    Sprint abre aquí una gestión existente para verla o editarla.
 //  · abrirGestionDesdeSprint(): la pestaña Sprint abre este modal ya
 //    prellenado (cuenta, rep, paso de la ruta) para no escribir a mano
 //    el nombre de la cuenta.
@@ -1405,6 +1407,15 @@ export function abrirGestionDesdeSprint(datos) {
   $("ag-c-sprint").value = "ruta";
   if (PASOS_RUTA.includes(datos.paso)) $("ag-c-sprint-paso").value = datos.paso;
   alCambiarSprint();
+}
+
+// Abre una gestión existente (la pide el panel lateral de la pestaña Sprint).
+export function abrirGestionPorId(id) {
+  const g = gestiones.find(x => x.id === id);
+  if (!g || !$("ag-modal")) return false;
+  if (!puedeEditar(g)) { toast("Solo puedes editar tus propias gestiones"); return false; }
+  abrirModal(g);
+  return true;
 }
 
 function alCambiarSprint() {

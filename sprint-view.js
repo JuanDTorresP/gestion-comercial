@@ -13,6 +13,9 @@
 // instalada (antes se repetían). Cálculo de la ruta en sprint-ruta.js:
 // pasos saltados no bloquean y los vencimientos cuentan desde el último
 // paso real.
+// v1.3: interactivo. Clic en tarjetas, filas del embudo, filas del
+// tablero de métricas, celdas por representante o nombres de cuenta →
+// panel lateral con las gestiones de ese número (sprint-detalle.js).
 //
 // Fase 2 sumará la calificación de oportunidades (deals) y
 // Fase 3 los rituales y la cosecha.
@@ -22,7 +25,20 @@ import { esAdmin, obtenerUsuario } from "./auth-service.js";
 import { suscribirGestiones } from "./firestore-service.js";
 import { SPRINT, REPS_SPRINT, ACCIONES_SPRINT, PASOS_RUTA, METAS } from "./sprint-config.js";
 import { montarCuentas, detenerCuentas, actualizarContextoCuentas, nombresCuentasBase } from "./sprint-cuentas.js";
-import { agruparRuta, estadoRuta, pasosHtml } from "./sprint-ruta.js";
+import { agruparRuta, estadoRuta, pasosHtml, normCuenta } from "./sprint-ruta.js";
+import { montarDetalle, abrirDetalle, cerrarDetalle } from "./sprint-detalle.js";
+
+// Qué gestiones forman cada indicador (clave usada en data-det).
+const MET = {
+  todas:        { t: "Acciones del sprint",                  f: g => !!ACCIONES_SPRINT[g.sprintAccion] },
+  cuentas:      { t: "Cuentas contactadas (ruta de 12 días)", f: g => g.sprintAccion === "ruta" },
+  pasos:        { t: "Pasos de la ruta",                     f: g => g.sprintAccion === "ruta" },
+  decisor:      { t: "Contactos con decisor",                f: g => g.sprintAccion === "ruta" && g.sprintDecisor },
+  chequeos:     { t: "Chequeos de espacio",                  f: g => g.sprintAccion === "chequeo" },
+  invitaciones: { t: "Invitaciones FLEX",                    f: g => g.sprintAccion === "invitacion" },
+  jornadas:     { t: "Jornadas FLEX",                        f: g => g.sprintAccion === "jornada" },
+  referidos:    { t: "Referidos obtenidos",                  f: g => g.sprintAccion === "referido" }
+};
 
 
 let gestiones = [];
@@ -30,6 +46,7 @@ let parar = null;
 let montado = false;
 let filtroRep = "";
 let escuchandoCuentas = false;
+let escuchandoDetalle = false;
 
 // ── Utilidades ──
 const $ = (id) => document.getElementById(id);
@@ -63,6 +80,7 @@ export function iniciarSprint() {
 export function detenerSprint() {
   if (parar) { parar(); parar = null; }
   detenerCuentas();
+  cerrarDetalle();
   gestiones = [];
   montado = false;
   filtroRep = "";
@@ -146,6 +164,7 @@ function montar(page) {
       <div class="sp-nota">Acumulado del sprint · entre paréntesis, lo de esta semana.</div></div>
 
     <div id="sp-cuentas" style="margin-top:8px"></div>
+    <div id="sp-detalle"></div>
 
     <div id="sp-ruta-wrap" style="display:none">
       <div class="sp-hdr2">
@@ -158,6 +177,13 @@ function montar(page) {
     </div>
   `;
   montarCuentas($("sp-cuentas"));
+  montarDetalle($("sp-detalle"));
+  if (!page.dataset.spClic) { page.addEventListener("click", alClicIndicador); page.dataset.spClic = "1"; }
+  if (!escuchandoDetalle) {
+    // Clic en el nombre de una cuenta (base instalada) → sus gestiones.
+    document.addEventListener("sprint:ver-gestiones", (e) => verCuenta(e.detail?.cuenta));
+    escuchandoDetalle = true;
+  }
   // Cuando cargan/cambian las cuentas de base instalada, se recalcula la
   // tabla "Otras cuentas en ruta" (para no repetir cuentas).
   if (!escuchandoCuentas) { document.addEventListener("sprint:cuentas-actualizadas", render); escuchandoCuentas = true; }
@@ -249,19 +275,19 @@ function render() {
   $("sp-conteo").textContent = `${lista.length} acciones del sprint registradas`;
 
   // Tarjetas
-  const tile = (lbl, v, meta, sub) => `<div class="m-card"><div class="m-lbl">${lbl}</div><div class="m-val">${v}<span style="font-size:13px;color:var(--txt3);font-weight:500"> / ${meta}</span></div><div class="m-sub">${sub}</div></div>`;
+  const tile = (lbl, v, meta, sub, det) => `<div class="m-card sp-clic" data-det="${det}" title="Ver las gestiones"><div class="m-lbl">${lbl}</div><div class="m-val">${v}<span style="font-size:13px;color:var(--txt3);font-weight:500"> / ${meta}</span></div><div class="m-sub">${sub}</div></div>`;
   $("sp-tiles").innerHTML =
-    tile("Cuentas contactadas", M.cuentas.tot, METAS.cuentasContactadas.total, `${M.cuentas.sem} esta semana`) +
-    tile("Contactos con decisor", M.decisor.tot, METAS.conDecisor.total, `${M.decisor.sem} esta semana`) +
-    tile("Invitaciones FLEX", M.invitaciones.tot, METAS.invitaciones.total, `${M.invitaciones.sem} esta semana`) +
-    tile("Jornadas FLEX", M.jornadas.tot, METAS.jornadas.total, `${M.jornadas.sem} esta semana`);
+    tile("Cuentas contactadas", M.cuentas.tot, METAS.cuentasContactadas.total, `${M.cuentas.sem} esta semana`, "cuentas") +
+    tile("Contactos con decisor", M.decisor.tot, METAS.conDecisor.total, `${M.decisor.sem} esta semana`, "decisor") +
+    tile("Invitaciones FLEX", M.invitaciones.tot, METAS.invitaciones.total, `${M.invitaciones.sem} esta semana`, "invitaciones") +
+    tile("Jornadas FLEX", M.jornadas.tot, METAS.jornadas.total, `${M.jornadas.sem} esta semana`, "jornadas");
 
   // Embudos
   const embudo = (id, filas) => {
     const max = Math.max(...filas.map(f => f[2]));
-    $(id).innerHTML = filas.map(([n, real, meta, fase2]) => {
+    $(id).innerHTML = filas.map(([n, real, meta, fase2, det]) => {
       const ok = real != null && real >= meta;
-      return `<div class="sp-frow${fase2 ? " fase2" : ""}">
+      return `<div class="sp-frow${fase2 ? " fase2" : " sp-clic"}"${det ? ` data-det="${det}" title="Ver las gestiones"` : ""}>
         <span>${n}</span>
         <div class="sp-track" role="img" aria-label="${n}: ${fase2 ? "Fase 2" : real + " de " + meta}">
           <span class="t" style="width:${meta / max * 100}%"></span>
@@ -271,16 +297,16 @@ function render() {
     }).join("");
   };
   embudo("sp-f1", [
-    ["Cuentas contactadas", M.cuentas.tot, METAS.cuentasContactadas.total],
-    ["Contactos con decisor", M.decisor.tot, METAS.conDecisor.total],
-    ["Chequeos de espacio", M.chequeos.tot, METAS.chequeos.total],
+    ["Cuentas contactadas", M.cuentas.tot, METAS.cuentasContactadas.total, false, "cuentas"],
+    ["Contactos con decisor", M.decisor.tot, METAS.conDecisor.total, false, "decisor"],
+    ["Chequeos de espacio", M.chequeos.tot, METAS.chequeos.total, false, "chequeos"],
     ["Calificadas (8+ puntos)", null, METAS.calificadasBase.total, true],
     ["Cotizaciones en reunión", null, METAS.cotizacionesBase.total, true],
     ["Proyectos cerrados", null, METAS.cerradosBase.total, true]
   ]);
   embudo("sp-f2", [
-    ["Invitaciones", M.invitaciones.tot, METAS.invitaciones.total],
-    ["Jornadas FLEX", M.jornadas.tot, METAS.jornadas.total],
+    ["Invitaciones", M.invitaciones.tot, METAS.invitaciones.total, false, "invitaciones"],
+    ["Jornadas FLEX", M.jornadas.tot, METAS.jornadas.total, false, "jornadas"],
     ["Calificadas (8+ puntos)", null, METAS.calificadasFlex.total, true],
     ["Cotizaciones en reunión", null, METAS.cotizacionesFlex.total, true],
     ["Proyectos cerrados", null, METAS.cerradosFlex.total, true]
@@ -289,16 +315,16 @@ function render() {
   // KPIs
   $("sp-sem-lbl").textContent = `Tablero de métricas · semana del ${fmtD(M.w)} al ${fmtD(addD(M.w, 4))}`;
   const filas = [
-    ["Cuentas contactadas (ruta de 12 días)", M.cuentas, null, METAS.cuentasContactadas.total],
-    ["Contactos efectivos con decisor", M.decisor, METAS.conDecisor.semanal, METAS.conDecisor.total],
-    ["Chequeos de espacio realizados", M.chequeos, METAS.chequeos.semanal, METAS.chequeos.total],
-    ["Invitaciones FLEX enviadas", M.invitaciones, METAS.invitaciones.semanal, METAS.invitaciones.total],
-    ["Jornadas FLEX realizadas", M.jornadas, METAS.jornadas.semanal, METAS.jornadas.total],
-    ["Referidos obtenidos (milla extra)", M.referidos, null, METAS.referidos.total]
+    ["Cuentas contactadas (ruta de 12 días)", M.cuentas, null, METAS.cuentasContactadas.total, "cuentas"],
+    ["Contactos efectivos con decisor", M.decisor, METAS.conDecisor.semanal, METAS.conDecisor.total, "decisor"],
+    ["Chequeos de espacio realizados", M.chequeos, METAS.chequeos.semanal, METAS.chequeos.total, "chequeos"],
+    ["Invitaciones FLEX enviadas", M.invitaciones, METAS.invitaciones.semanal, METAS.invitaciones.total, "invitaciones"],
+    ["Jornadas FLEX realizadas", M.jornadas, METAS.jornadas.semanal, METAS.jornadas.total, "jornadas"],
+    ["Referidos obtenidos (milla extra)", M.referidos, null, METAS.referidos.total, "referidos"]
   ];
-  $("sp-kpi").querySelector("tbody").innerHTML = filas.map(([n, v, ms, mt]) => `
-    <tr><td><strong>${n}</strong></td>
-      <td class="sp-num">${v.sem}</td><td class="sp-num">${ms ?? "—"}</td>
+  $("sp-kpi").querySelector("tbody").innerHTML = filas.map(([n, v, ms, mt, det]) => `
+    <tr class="sp-clic" data-det="${det}" title="Ver las gestiones del sprint"><td><strong>${n}</strong></td>
+      <td class="sp-num sp-clic" data-det="${det}" data-scope="sem" title="Ver solo las de esta semana">${v.sem}</td><td class="sp-num">${ms ?? "—"}</td>
       <td class="sp-num"><strong>${v.tot}</strong></td><td class="sp-num">${mt}</td>
       <td class="sp-num">${pill(v.tot, mt)}</td></tr>`).join("") +
     `<tr><td colspan="6" class="sp-nota">Fase 2: calificadas, cotizaciones, cierres, tasa de cierre y pérdidas con motivo · Fase 3: asistencia a rituales y cosecha.</td></tr>`;
@@ -314,11 +340,39 @@ function renderReps() {
   const c = (v) => `${v.tot} <span style="color:var(--txt3)">(${v.sem})</span>`;
   $("sp-reps").querySelector("tbody").innerHTML = reps.map(r => {
     const M = medir(todos.filter(g => g.rep === r));
-    return `<tr><td><strong>${esc(r)}</strong></td>
-      <td class="sp-num">${c(M.cuentas)}</td><td class="sp-num">${c(M.pasos)}</td><td class="sp-num">${c(M.decisor)}</td>
-      <td class="sp-num">${c(M.chequeos)}</td><td class="sp-num">${c(M.invitaciones)}</td><td class="sp-num">${c(M.jornadas)}</td>
-      <td class="sp-num">${c(M.referidos)}</td></tr>`;
+    const td = (k) => `<td class="sp-num sp-clic" data-det="${k}" data-rep="${esc(r)}" title="Ver las gestiones">${c(M[k])}</td>`;
+    return `<tr><td class="sp-clic" data-det="todas" data-rep="${esc(r)}" title="Ver todas sus acciones del sprint"><strong>${esc(r)}</strong></td>
+      ${td("cuentas")}${td("pasos")}${td("decisor")}${td("chequeos")}${td("invitaciones")}${td("jornadas")}${td("referidos")}</tr>`;
   }).join("");
+}
+
+// ═══════════════════════════════════════════
+// INTERACCIÓN: clic en un indicador → panel con sus gestiones
+// ═══════════════════════════════════════════
+function alClicIndicador(e) {
+  const cta = e.target.closest("#sp-ruta [data-cuenta]");
+  if (cta) { verCuenta(cta.dataset.cuenta); return; }
+  const el = e.target.closest("[data-det]");
+  if (!el || !$("page-sprint")?.contains(el) || el.closest("#sp-cuentas")) return;
+  const met = MET[el.dataset.det]; if (!met) return;
+  const scope = el.dataset.scope || "tot";
+  const repSel = el.dataset.rep || "";
+  const base = repSel
+    ? gestiones.filter(g => ACCIONES_SPRINT[g.sprintAccion] && g.fecha >= SPRINT.inicio && g.fecha <= SPRINT.fin && g.rep === repSel)
+    : delSprint();
+  const w = semanaActual();
+  const lista = base.filter(met.f).filter(g => scope !== "sem" || (g.fecha >= w && g.fecha <= addD(w, 6)));
+  const quien = repSel || filtroRep || "todo el equipo";
+  const periodo = scope === "sem" ? `semana del ${fmtD(w)} al ${fmtD(addD(w, 4))}` : "acumulado del sprint";
+  abrirDetalle({ titulo: met.t, sub: `${quien} · ${periodo}`, lista });
+}
+
+// Todas las gestiones de una cuenta (cualquier fecha), más recientes primero.
+function verCuenta(cuenta) {
+  if (!cuenta) return;
+  const k = normCuenta(cuenta);
+  const lista = gestiones.filter(g => normCuenta(g.cuenta) === k);
+  abrirDetalle({ titulo: cuenta, sub: "historial de gestiones en la Agenda", lista });
 }
 
 function renderRuta(lista) {
@@ -334,7 +388,7 @@ function renderRuta(lista) {
   $("sp-ruta").querySelector("tbody").innerHTML = filas.map(({ a, r }) => {
     const p = r.codigo === "vencido" ? ["sp-bad", `Vencido ${diasEntre(r.vence, t)} d`] : pill[r.codigo];
     return `
-    <tr><td><strong>${esc(a.cuenta)}</strong></td><td>${esc(a.rep)}</td>
+    <tr><td><strong class="sp-link" data-cuenta="${esc(a.cuenta)}" title="Ver sus gestiones">${esc(a.cuenta)}</strong></td><td>${esc(a.rep)}</td>
       <td>${pasosHtml(r)}</td>
       <td>${fmtD(r.ultimo)}</td>
       <td>${r.codigo === "completa" ? "—" : `${PASOS_RUTA[r.idx]} · ${fmtD(r.vence)}`}</td>

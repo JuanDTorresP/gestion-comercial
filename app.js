@@ -9,7 +9,7 @@
 
 import { iniciarSesion, cerrarSesion, observarSesion, esAdmin } from "./auth-service.js";
 import { iniciarPipeline, detenerPipeline } from "./pipeline-view.js";
-import { iniciarAgenda, detenerAgenda, abrirGestionDesdeSprint } from "./agenda-view.js";
+import { iniciarAgenda, detenerAgenda, abrirGestionDesdeSprint, abrirGestionPorId } from "./agenda-view.js";
 import { iniciarSprint, detenerSprint } from "./sprint-view.js";
 
 // ───────────────────────────────────────────────
@@ -117,4 +117,10 @@ tabs.sprint.boton.addEventListener("click", () => mostrarTab("sprint"));
 document.addEventListener("sprint:registrar-paso", (e) => {
   mostrarTab("agenda");
   abrirGestionDesdeSprint(e.detail || {});
+});
+
+// El panel de gestiones de la pestaña Sprint pide abrir una gestión existente.
+document.addEventListener("sprint:abrir-gestion", (e) => {
+  mostrarTab("agenda");
+  abrirGestionPorId(e.detail?.id);
 });
