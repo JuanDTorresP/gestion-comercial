@@ -1,5 +1,7 @@
 // ═══════════════════════════════════════════════════════════
-// agenda-view.js — v5.0
+// agenda-view.js — v5.1
+// v5.1: abrirGestionParaCuenta() → la ficha de cuenta abre el formulario
+//       con la cuenta ya elegida.
 // Cambios v5.0 (nov 2026):
 //  · FORMULARIO:
 //    - Ciudad fija: Bogotá.
@@ -1973,6 +1975,14 @@ export function abrirGestionDesdeSprint(datos) {
   $("ag-c-sprint").value = "ruta";
   if (PASOS_RUTA.includes(datos.paso)) $("ag-c-sprint-paso").value = datos.paso;
   alCambiarSprint();
+}
+
+// Abre el formulario con la cuenta ya elegida (lo pide la ficha de cuenta).
+export function abrirGestionParaCuenta(nombre) {
+  if (!$("ag-modal")) return;
+  abrirModal(null);
+  $("ag-c-cuenta").value = nombre || "";
+  alCambiarCuenta();
 }
 
 // Abre una gestión existente (la pide el panel lateral de la pestaña Sprint).

@@ -1,5 +1,11 @@
 // ═══════════════════════════════════════════════════════════
-// pipeline-view.js — v4.2
+// pipeline-view.js — v4.3
+// Cambios v4.3 (nov 2026):
+//  · Pestaña 🏢 Cuentas: clic en una cuenta abre la 📇 FICHA 360
+//    (cuenta-ficha.js): datos, contactos, ganado/perdido/activo,
+//    oportunidades de todos los años, actividad y notas de la agenda.
+//  · Buscador para abrir la ficha de CUALQUIER cuenta (también las
+//    que aún no tienen oportunidades) y columna "Último contacto".
 // Vista del Pipeline con tres sub-pestañas:
 //   📈 Dashboard      → forecast vs cuota, embudo, pipeline por
 //                       mes, top 10 cuentas y avance de cuota
@@ -29,6 +35,7 @@
 
 import { obtenerUsuario, esAdmin } from "./auth-service.js";
 import { suscribirDeals, crearDeal, actualizarDeal, eliminarDeal, suscribirCuotas, guardarCuotas } from "./firestore-service.js";
+import { abrirFichaCuenta, alCambiarCuentas, nombresCuentas, actividadCuenta, detenerFichaCuenta } from "./cuenta-ficha.js";
 
 // ═══════════════════════════════════════════
 // ⚙️ CUOTAS — ahora se administran DESDE EL CRM
@@ -252,6 +259,7 @@ function actualizarTitulosAnio() {
 }
 
 export function detenerPipeline() {
+  detenerFichaCuenta();
   if (parar) { parar(); parar = null; }
   if (pararCuotas) { pararCuotas(); pararCuotas = null; }
   Object.keys(charts).forEach(k => { charts[k].destroy(); delete charts[k]; });
@@ -579,7 +587,12 @@ function pintarEstructura() {
     <!-- ═══ SUB-VISTA: CUENTAS (consolidado por cliente) ═══ -->
     <div id="pl-sub-ctas" style="display:none">
       <div class="m-grid" id="ctas-metricas"></div>
-      <p class="hint">💡 Haz clic en una cuenta para ver sus oportunidades. La lista respeta los filtros globales.</p>
+      <div class="filtros-bar">
+        <input class="filtro-input" id="ctas-buscar" list="ctas-dl" placeholder="📇 Buscar cualquier cuenta para abrir su ficha (también sin oportunidades)…" style="flex:1;min-width:220px" autocomplete="off"/>
+        <datalist id="ctas-dl"></datalist>
+        <button class="btn-primario" id="ctas-abrir" style="padding:8px 14px;font-size:12px">📇 Abrir ficha</button>
+      </div>
+      <p class="hint">💡 Haz clic en una cuenta para abrir su ficha completa: datos, contactos, oportunidades ganadas y perdidas, actividad y notas. La tabla respeta los filtros globales.</p>
       <div class="card" style="padding:0 16px 8px">
         <div class="tbl-wrap">
           <table class="tbl">
@@ -590,6 +603,7 @@ function pintarEstructura() {
               <th style="text-align:right">Pipeline activo</th>
               <th style="text-align:right">Esperado</th>
               <th style="text-align:right">Ganado</th>
+              <th style="text-align:right" title="Última gestión registrada en la Agenda">Último contacto</th>
             </tr></thead>
             <tbody id="ctas-tbody"></tbody>
           </table>
@@ -734,6 +748,16 @@ function pintarEstructura() {
   $("pl-st-dash").addEventListener("click", () => mostrarSub("dash"));
   $("pl-st-tabla").addEventListener("click", () => mostrarSub("tabla"));
   $("pl-st-ctas").addEventListener("click", () => mostrarSub("ctas"));
+  $("ctas-abrir").addEventListener("click", abrirDesdeBuscador);
+  $("ctas-buscar").addEventListener("keydown", (e) => { if (e.key === "Enter") abrirDesdeBuscador(); });
+  // Elegir una opción de la lista abre la ficha de inmediato
+  $("ctas-buscar").addEventListener("input", (e) => {
+    if (e.inputType === "insertReplacementText" || e.inputType === undefined) {
+      const v = e.target.value.trim().toLowerCase();
+      if (nombresCuentas().some(n => n.toLowerCase() === v)) abrirDesdeBuscador();
+    }
+  });
+  alCambiarCuentas(() => { llenarBuscadorCuentas(); renderCuentas(); });
 
   // Selector de año: cada pantalla muestra SOLO ese año de radicación
   $("pl-anio-tabs").querySelectorAll(".pl-anio-tab").forEach(btn => {
@@ -1732,7 +1756,7 @@ function renderCuentas() {
   `;
 
   cont.innerHTML = lista.length === 0
-    ? `<tr><td colspan="6" class="lista-vacia">Sin cuentas con los filtros actuales</td></tr>`
+    ? `<tr><td colspan="7" class="lista-vacia">Sin cuentas con los filtros actuales</td></tr>`
     : lista.map(x => `
       <tr class="cta-row" data-cta="${esc(x.nombre)}" style="cursor:pointer">
         <td><b>${esc(x.nombre)}</b></td>
@@ -1741,17 +1765,56 @@ function renderCuentas() {
         <td style="text-align:right">${fmt(x.activo)}</td>
         <td style="text-align:right">${fmt(x.esperado)}</td>
         <td style="text-align:right;color:var(--green)">${fmt(x.ganado)}</td>
+        <td style="text-align:right">${ultimoContactoHtml(x.nombre)}</td>
       </tr>`).join("");
 
   cont.querySelectorAll(".cta-row").forEach(tr => {
     tr.addEventListener("click", () => {
       const nombre = tr.dataset.cta;
       if (nombre === "(Sin cuenta)") return;
-      filtros.cuenta = nombre; // filtro exacto (antes buscaba por texto parcial)
-      render();
-      mostrarSub("tabla");
+      abrirFicha(nombre);
     });
   });
+}
+
+// "hace 12 d" con color: verde < 30 días, ámbar < 90, rojo ≥ 90
+function ultimoContactoHtml(nombre) {
+  const a = actividadCuenta(nombre);
+  if (a.dias == null) return `<span style="color:var(--txt3)">—</span>`;
+  const color = a.dias < 30 ? "#15803d" : a.dias < 90 ? "#b45309" : "#b91c1c";
+  return `<span style="color:${color};font-weight:600" title="${a.gestiones} gestión(es) · última ${a.ultima}">${a.dias === 0 ? "hoy" : "hace " + a.dias + " d"}</span>`;
+}
+
+// 📇 Abre la ficha 360 de la cuenta
+function abrirFicha(nombre) {
+  abrirFichaCuenta(nombre, {
+    onVerOportunidades: (n) => {
+      filtros.cuenta = n; // filtro exacto
+      render();
+      mostrarSub("tabla");
+    },
+    onAbrirDeal: (d) => {
+      if (puedeEditar(d)) abrirModal(d);
+      else toast(`Solo lectura: esta oportunidad es de ${d.rep || "otro rep"}`);
+    }
+  });
+}
+
+function llenarBuscadorCuentas() {
+  const dl = $("ctas-dl");
+  if (dl) dl.innerHTML = nombresCuentas().map(n => `<option value="${esc(n)}">`).join("");
+}
+function abrirDesdeBuscador() {
+  const inp = $("ctas-buscar");
+  const txt = inp.value.trim();
+  if (!txt) return;
+  const k = txt.toLowerCase();
+  const nombres = nombresCuentas();
+  const exacto = nombres.find(n => n.toLowerCase() === k);
+  const parecido = exacto || nombres.find(n => n.toLowerCase().includes(k));
+  if (!parecido) { toast("No encontramos esa cuenta"); return; }
+  inp.value = "";
+  abrirFicha(parecido);
 }
 
 // ═══════════════════════════════════════════

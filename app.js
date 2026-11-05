@@ -9,7 +9,7 @@
 
 import { iniciarSesion, cerrarSesion, observarSesion, esAdmin } from "./auth-service.js";
 import { iniciarPipeline, detenerPipeline } from "./pipeline-view.js";
-import { iniciarAgenda, detenerAgenda, abrirGestionDesdeSprint, abrirGestionPorId } from "./agenda-view.js";
+import { iniciarAgenda, detenerAgenda, abrirGestionDesdeSprint, abrirGestionPorId, abrirGestionParaCuenta } from "./agenda-view.js";
 import { iniciarSprint, detenerSprint } from "./sprint-view.js";
 
 // ───────────────────────────────────────────────
@@ -123,4 +123,11 @@ document.addEventListener("sprint:registrar-paso", (e) => {
 document.addEventListener("sprint:abrir-gestion", (e) => {
   mostrarTab("agenda");
   abrirGestionPorId(e.detail?.id);
+});
+
+// La ficha de una cuenta (pestaña Cuentas del Pipeline) pide registrar
+// una gestión → abre la Agenda con la cuenta ya elegida.
+document.addEventListener("ficha:registrar-gestion", (e) => {
+  mostrarTab("agenda");
+  abrirGestionParaCuenta(e.detail?.cuenta || "");
 });
