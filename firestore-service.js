@@ -8,6 +8,7 @@
 //   deals     → oportunidades del Pipeline 2026
 //   gestiones → registros de la Agenda Comercial
 //   cuentasSprint → cuentas de base instalada a recontactar (Sprint)
+//   cuentas   → ficha única por cliente (canal, sector, contactos) — nov 2026
 //
 // Todas las funciones de escritura devuelven { ok, error }.
 // Las suscripciones entregan los datos EN VIVO: cada vez que
@@ -27,7 +28,8 @@ import {
   query,
   orderBy,
   serverTimestamp,
-  writeBatch
+  writeBatch,
+  arrayUnion
 } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
 // ───────────────────────────────────────────────
@@ -244,6 +246,72 @@ export async function importarCuentasSprint(items) {
     return { ok: true };
   } catch (error) {
     console.error("Error importando cuentas del sprint:", error);
+    return { ok: false, error: traducirErrorFirestore(error) };
+  }
+}
+
+// ───────────────────────────────────────────────
+// CUENTAS · ficha del cliente (colección: cuentas) — nov 2026
+// Un documento por cliente. Id = slug del nombre (ver idCuenta()).
+//   { nombre, canal: "Retail"|"Corporativo", sector: "Público"|"Privado",
+//     contactos: [{ nombre, cargo, correo, telefono, creadoPor, fecha }],
+//     creadoPor, creadoEn, actualizadoEn }
+// Reglas: todos leen y crean; un vendedor solo puede AGREGAR
+// contactos y completar canal/sector si estaban vacíos.
+// ───────────────────────────────────────────────
+
+// "Constructora Bolívar S.A." → "constructora-bolivar-s-a"
+export function idCuenta(nombre) {
+  return String(nombre || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 120) || "sin-nombre";
+}
+
+export function suscribirCuentas(callback, onError) {
+  return onSnapshot(collection(db, "cuentas"), (snap) => {
+    callback(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+  }, (error) => {
+    console.error("Error escuchando cuentas:", error);
+    if (onError) onError(error);
+  });
+}
+
+// Crea la ficha de una cuenta nueva.
+export async function crearCuenta(id, datos) {
+  try {
+    await setDoc(doc(db, "cuentas", id), {
+      contactos: [],
+      ...datos,
+      creadoEn: serverTimestamp(),
+      actualizadoEn: serverTimestamp()
+    });
+    return { ok: true, id };
+  } catch (error) {
+    console.error("Error creando cuenta:", error);
+    return { ok: false, error: traducirErrorFirestore(error) };
+  }
+}
+
+// Completa canal / sector de una ficha existente.
+export async function actualizarCuenta(id, datos) {
+  try {
+    await updateDoc(doc(db, "cuentas", id), { ...datos, actualizadoEn: serverTimestamp() });
+    return { ok: true };
+  } catch (error) {
+    console.error("Error actualizando cuenta:", error);
+    return { ok: false, error: traducirErrorFirestore(error) };
+  }
+}
+
+// Agrega un contacto a la ficha (sin borrar los que ya había).
+export async function agregarContactoCuenta(id, contacto) {
+  try {
+    await updateDoc(doc(db, "cuentas", id), {
+      contactos: arrayUnion(contacto),
+      actualizadoEn: serverTimestamp()
+    });
+    return { ok: true };
+  } catch (error) {
+    console.error("Error agregando contacto:", error);
     return { ok: false, error: traducirErrorFirestore(error) };
   }
 }

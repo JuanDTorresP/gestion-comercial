@@ -1,5 +1,22 @@
 // ═══════════════════════════════════════════════════════════
-// agenda-view.js — v4.2
+// agenda-view.js — v5.0
+// Cambios v5.0 (nov 2026):
+//  · FORMULARIO:
+//    - Ciudad fija: Bogotá.
+//    - Cuenta: se elige una EXISTENTE (buscador) o se REGISTRA una nueva.
+//      Tipo de cliente, canal y sector salen solos de la ficha de la cuenta.
+//    - Nueva ficha de cuenta (colección `cuentas`): canal, sector
+//      (🏛 Público / 💼 Privado) y contactos que el equipo va alimentando.
+//    - Contacto de la gestión: se elige de la ficha o se agrega uno nuevo.
+//    - Modalidad = Venta / Renta (campo `negocio`). Virtual/Presencial
+//      se conserva como "Tipo de reunión" (campo `modalidad`, sin cambios).
+//    - Historial de notas de la cuenta dentro del modal.
+//  · MÉTRICAS:
+//    - Nueva sub-pestaña "📈 Histórico": indicador del mes vs mes anterior,
+//      vs promedio del año, ritmo del mes en curso, tabla mes a mes con
+//      mapa de calor, rep × mes, y preparado para año fiscal (FY_INICIO_MES).
+//    - Reporte mensual: variación vs mes anterior en cada tarjeta y una
+//      gráfica de composición (100%) que reemplaza las tres donas.
 // Cambios v4.2 (oct 2026) · Sprint de Tracción, Fase 1:
 //  · Bloque opcional "🚀 Sprint de Tracción" en el modal de gestión:
 //    acción del sprint (ruta, chequeo, invitación FLEX, jornada FLEX,
@@ -33,7 +50,9 @@
 import { obtenerUsuario, esAdmin } from "./auth-service.js";
 import {
   suscribirGestiones, crearGestion, actualizarGestion, eliminarGestion,
-  suscribirDeals, crearDeal, actualizarDeal
+  suscribirDeals, crearDeal, actualizarDeal,
+  suscribirCuentas, crearCuenta, actualizarCuenta, agregarContactoCuenta, idCuenta,
+  suscribirCuentasSprint
 } from "./firestore-service.js";
 import { ACCIONES_SPRINT, PASOS_RUTA } from "./sprint-config.js";
 
@@ -63,6 +82,26 @@ const ETAPAS = ["Identificado", "Seguimiento", "Cotización", "Diseño", "Negoci
 const ETAPA_COLORS = { "Identificado": "#2563EB", "Seguimiento": "#7c3aed", "Cotización": "#d97706", "Diseño": "#dc2626", "Negociación": "#16a34a" };
 const REP_COLORS = ["#2563EB", "#16a34a", "#7c3aed", "#d97706", "#dc2626", "#0d9488"];
 const MESES_NOMBRE = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
+// Ciudad única de operación
+const CIUDAD_FIJA = "Bogotá";
+// Mes en que arranca el año fiscal (1 = enero → FY = año calendario).
+// Si el FY de Famoc arranca en otro mes, cambiar solo este número.
+const FY_INICIO_MES = 1;
+const SECTORES = ["Público", "Privado"];
+const SECTOR_TXT = { "Público": "🏛 Público (gobierno)", "Privado": "💼 Privado" };
+const NEGOCIOS = ["Venta", "Renta"];
+// Indicadores del histórico: clave → { etiqueta, cálculo sobre una lista de gestiones }
+const INDICADORES = {
+  total:   { t: "Gestiones totales",   f: l => l.length },
+  com:     { t: "Comerciales",         f: l => l.filter(g => g.tipo === "Comercial").length },
+  ope:     { t: "Operativas",          f: l => l.filter(g => g.tipo === "Operativo").length },
+  cta:     { t: "Cuentas únicas",      f: l => new Set(l.map(g => normNombre(g.cuenta)).filter(Boolean)).size },
+  nue:     { t: "Clientes nuevos",     f: l => l.filter(g => g.tipoCliente === "Nuevo").length },
+  pre:     { t: "Reuniones presenciales", f: l => l.filter(g => g.modalidad === "Presencial").length },
+  venta:   { t: "Gestiones de venta",  f: l => l.filter(g => g.negocio === "Venta").length },
+  renta:   { t: "Gestiones de renta",  f: l => l.filter(g => g.negocio === "Renta").length },
+  pub:     { t: "Sector público",      f: l => l.filter(g => g.sector === "Público").length }
+};
 const DIAS_NOMBRE = ["lunes","martes","miércoles","jueves","viernes","sábado","domingo"];
 
 // Estados del PIPELINE y traducción etapa de agenda → estado sugerido
@@ -78,7 +117,16 @@ const MAPA_ETAPA_ESTADO = {
 // ── Estado interno ──
 let gestiones = [];
 let deals = [];
-let parar = null, pararDeals = null;
+let fichas = [];          // colección `cuentas`
+let cuentasSprint = [];   // base instalada (para contactos y existencia)
+let parar = null, pararDeals = null, pararFichas = null, pararSprint = null;
+// Estado del bloque de cuenta en el modal
+let modoCuenta = "existente";   // "existente" | "nueva"
+let cuentaOriginal = "";        // cuenta de la gestión en edición
+let tipoClienteOriginal = "";
+let histLimite = 8;
+// Histórico
+let hisFY = null, hisMes = "", hisInd = "total", hisRep = "";
 let editandoId = null;
 let charts = {};
 let semanaOffset = 0;
@@ -86,7 +134,7 @@ let semRep = "", semTipo = "", semMod = "";
 let cmpA = "", cmpB = "";
 let eqMes = "";
 let mesInicializado = false;
-const filtros = { texto: "", rep: "", tipo: "", etapa: "", mes: "", tipoCliente: "", canal: "", modalidad: "" };
+const filtros = { texto: "", rep: "", tipo: "", etapa: "", mes: "", tipoCliente: "", canal: "", modalidad: "", negocio: "", sector: "" };
 
 // ── Utilidades ──
 const $ = (id) => document.getElementById(id);
@@ -172,12 +220,15 @@ function itemHtml(g) {
         <div class="ag-meta">
           ${chip(g.tipo, g.tipo === "Comercial" ? "#EFF6FF" : "#F3F4F6", g.tipo === "Comercial" ? "#1d4ed8" : "#374151")}
           ${chip(etapaDe(g), "#EDE9FE", "#6d28d9")}
-          ${chip(g.canal, "#DCFCE7", "#15803d")}
+          ${chip(g.negocio, g.negocio === "Renta" ? "#E0E7FF" : "#DCFCE7", g.negocio === "Renta" ? "#4338ca" : "#15803d")}
+          ${chip(g.canal, "#F3F4F6", "#374151")}
+          ${chip(g.sector ? (g.sector === "Público" ? "🏛 Público" : "💼 Privado") : "", "#F3F4F6", "#374151")}
           ${chip(g.modalidad, "#FEF3C7", "#b45309")}
           ${chip(g.tipoCliente === "Nuevo" ? "✨ Nuevo" : "", "#CCFBF1", "#0f766e")}
           ${chip(g.dealId ? "🔗 Pipeline" : "", "#EFF6FF", "#1d4ed8")}
           ${chip(chipSprint(g), "#FEF3C7", "#92400e")}
-          <span class="ag-ciudad">📍 ${esc(g.ciudad) || "—"}</span>
+          ${g.contactoNombre ? `<span class="ag-ciudad">👤 ${esc(g.contactoNombre)}${g.contactoCargo ? " · " + esc(g.contactoCargo) : ""}</span>` : ""}
+          ${g.ciudad && normNombre(g.ciudad) !== normNombre(CIUDAD_FIJA) ? `<span class="ag-ciudad">📍 ${esc(g.ciudad)}</span>` : ""}
         </div>
         ${g.notas ? `<div class="ag-notas">${esc(g.notas)}</div>` : ""}
       </div>
@@ -205,11 +256,12 @@ function activarBotonesEditar(contenedor) {
 // ═══════════════════════════════════════════
 export function iniciarAgenda() {
   semanaOffset = 0; semRep = ""; semTipo = ""; semMod = ""; cmpA = ""; cmpB = ""; eqMes = ""; mesInicializado = false;
+  hisFY = null; hisMes = ""; hisInd = "total"; hisRep = "";
   Object.keys(filtros).forEach(k => filtros[k] = "");
   pintarEstructura();
   if (parar) parar();
   parar = suscribirGestiones(
-    (lista) => { gestiones = lista; actualizarOpcionesFiltros(); render(); },
+    (lista) => { gestiones = lista; actualizarOpcionesFiltros(); refrescarCuentas(); render(); },
     () => {
       $("ag-sub-sem").innerHTML =
         `<div class="estado-conexion error">✕ No se pudo conectar a la Agenda. Revisa tu conexión o tus permisos.</div>`;
@@ -218,7 +270,18 @@ export function iniciarAgenda() {
   // También escuchamos las oportunidades del pipeline (para la trazabilidad)
   if (pararDeals) pararDeals();
   pararDeals = suscribirDeals(
-    (lista) => { deals = lista; poblarSelectDeals(); },
+    (lista) => { deals = lista; poblarSelectDeals(); refrescarCuentas(); },
+    () => {}
+  );
+  // Fichas de cuenta (canal, sector, contactos) y base instalada del sprint
+  if (pararFichas) pararFichas();
+  pararFichas = suscribirCuentas(
+    (lista) => { fichas = lista; refrescarCuentas(); },
+    () => { console.warn("No se pudo leer la colección cuentas: revisa las reglas de Firestore."); }
+  );
+  if (pararSprint) pararSprint();
+  pararSprint = suscribirCuentasSprint(
+    (lista) => { cuentasSprint = lista; refrescarCuentas(); },
     () => {}
   );
 }
@@ -226,9 +289,13 @@ export function iniciarAgenda() {
 export function detenerAgenda() {
   if (parar) { parar(); parar = null; }
   if (pararDeals) { pararDeals(); pararDeals = null; }
+  if (pararFichas) { pararFichas(); pararFichas = null; }
+  if (pararSprint) { pararSprint(); pararSprint = null; }
   Object.keys(charts).forEach(k => { charts[k].destroy(); delete charts[k]; });
   gestiones = [];
   deals = [];
+  fichas = [];
+  cuentasSprint = [];
 }
 
 // ═══════════════════════════════════════════
@@ -302,6 +369,50 @@ function pintarEstructura() {
       .sprint-check{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;color:#92400e;padding:9px 0;cursor:pointer}
       .sprint-check input{width:16px;height:16px}
       @media(max-width:820px){.cmp-heads{grid-template-columns:1fr}}
+      /* v5 · bloque de cuenta y contacto */
+      .cta-box{grid-column:1/-1;border:1.5px solid var(--border);border-radius:10px;padding:12px;background:var(--surface)}
+      .seg{display:inline-flex;background:var(--s2);border-radius:99px;padding:3px;margin-bottom:10px}
+      .seg button{border:none;background:none;padding:6px 14px;border-radius:99px;font-size:12px;font-weight:600;color:var(--txt2);cursor:pointer;font-family:inherit}
+      .seg button.on{background:var(--surface);color:var(--txt);box-shadow:0 1px 3px rgba(0,0,0,.12)}
+      .cta-res{font-size:12px;margin-top:8px;display:flex;gap:6px;flex-wrap:wrap;align-items:center;min-height:20px}
+      .cta-res .ok{color:#15803d;font-weight:600}
+      .cta-res .warn{color:#b45309;font-weight:600}
+      .cta-res button{border:none;background:var(--blue-l);color:#1d4ed8;font-weight:600;font-size:11px;border-radius:99px;padding:3px 10px;cursor:pointer;font-family:inherit}
+      .cta-auto{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+      .cta-sub{font-size:11px;color:var(--txt3);margin-top:4px}
+      .ct-info{font-size:12px;color:var(--txt2);margin-top:6px;line-height:1.5}
+      .ct-info a{color:var(--blue);text-decoration:none}
+      .ag-ro{background:var(--s2);color:var(--txt2)}
+      .hist-box{grid-column:1/-1;border-left:3px solid var(--purple);background:var(--s2);border-radius:0 10px 10px 0;padding:10px 12px}
+      .hist-tit{font-size:12px;font-weight:700;color:var(--txt2);display:flex;justify-content:space-between;align-items:center}
+      .hist-it{padding:8px 0;border-bottom:.5px solid var(--border);font-size:12px}
+      .hist-it:last-child{border-bottom:none}
+      .hist-fecha{font-weight:600;color:var(--txt)}
+      .hist-meta{color:var(--txt3)}
+      .hist-nota{color:var(--txt2);margin-top:3px;white-space:pre-wrap}
+      .hist-mas{border:none;background:none;color:var(--blue);font-weight:600;font-size:12px;cursor:pointer;padding:6px 0 0;font-family:inherit}
+      /* v5 · histórico */
+      .his-ctrl{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px}
+      .his-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:16px}
+      .his-kpi{background:var(--surface);border:.5px solid var(--border);border-radius:var(--r);padding:14px}
+      .his-kpi .l{font-size:11px;color:var(--txt2);margin-bottom:4px}
+      .his-kpi .v{font-size:22px;font-weight:700;line-height:1.15}
+      .his-kpi .s{font-size:11px;color:var(--txt3);margin-top:4px}
+      .his-kpi.main{background:linear-gradient(135deg,#1e3a8a,#2563EB);color:#fff;border:none}
+      .his-kpi.main .l,.his-kpi.main .s{color:rgba(255,255,255,.8)}
+      .tbl-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+      .his-tbl{border-collapse:separate;border-spacing:3px;font-size:12px;min-width:100%}
+      .his-tbl th{font-weight:600;color:var(--txt2);padding:6px 6px;text-align:center;white-space:nowrap;font-size:11px}
+      .his-tbl th.sel{color:var(--blue)}
+      .his-tbl th.mes{cursor:pointer}
+      .his-tbl th.mes:hover{color:var(--blue)}
+      .his-tbl td{text-align:center;padding:7px 6px;border-radius:6px;white-space:nowrap;font-variant-numeric:tabular-nums}
+      .his-tbl td.lbl{text-align:left;color:var(--txt2);background:none;font-weight:500;cursor:pointer;position:sticky;left:0;background:var(--surface)}
+      .his-tbl tr.on td.lbl{color:var(--blue);font-weight:700}
+      .his-tbl td.tot{font-weight:700;background:var(--s2)}
+      .his-tbl td small{display:block;font-size:10px;font-weight:600;margin-top:1px}
+      .his-tbl td.sel{outline:2px solid var(--blue);outline-offset:-2px}
+      .up{color:#15803d}.down{color:#b91c1c}.eq{color:var(--txt3)}
     </style>
 
     <div class="page-hdr">
@@ -317,7 +428,7 @@ function pintarEstructura() {
       <button class="ag-subtab ${esAdmin() ? "active" : ""}" id="ag-st-sem">🗓 Semana actual</button>
       ${esAdmin() ? `<button class="ag-subtab" id="ag-st-eq">👥 Equipo</button>` : ""}
       <button class="ag-subtab" id="ag-st-mes">📊 Reporte mensual</button>
-      <button class="ag-subtab" id="ag-st-cmp">📈 Evolución mensual</button>
+      <button class="ag-subtab" id="ag-st-cmp">📈 Histórico</button>
     </div>
 
     <!-- ═══ MI AGENDA (solo reps: únicamente SUS gestiones) ═══ -->
@@ -357,7 +468,7 @@ function pintarEstructura() {
     <!-- ═══ MENSUAL ═══ -->
     <div id="ag-sub-mes" style="display:none">
       <div class="m-grid" id="ag-metricas"></div>
-      <p class="hint">💡 Haz clic en las tarjetas, en las barras o en la dona para filtrar la lista.</p>
+      <p class="hint">💡 Haz clic en las tarjetas, en las barras, en la dona o en la composición para filtrar la lista.</p>
       <div class="pl-g2" style="margin-bottom:16px">
         <div class="card" style="margin-bottom:0">
           <p class="section-lbl">Gestiones por rep</p>
@@ -368,25 +479,12 @@ function pintarEstructura() {
           <div style="height:190px;position:relative"><canvas id="ag-ch-etapas"></canvas></div>
         </div>
       </div>
-      <div class="ag-g3" style="margin-bottom:16px">
-        <div class="card" style="margin-bottom:0">
-          <p class="section-lbl">Tipo de gestión</p>
-          <div style="height:145px;position:relative"><canvas id="ag-ch-tipo"></canvas></div>
-          <div class="hint" id="sum-tipo" style="margin:8px 0 0"></div>
-        </div>
-        <div class="card" style="margin-bottom:0">
-          <p class="section-lbl">Modalidad</p>
-          <div style="height:145px;position:relative"><canvas id="ag-ch-mod"></canvas></div>
-          <div class="hint" id="sum-mod" style="margin:8px 0 0"></div>
-        </div>
-        <div class="card" style="margin-bottom:0">
-          <p class="section-lbl">Tipo de cliente</p>
-          <div style="height:145px;position:relative"><canvas id="ag-ch-cli"></canvas></div>
-          <div class="hint" id="sum-cli" style="margin:8px 0 0"></div>
-        </div>
+      <div class="card">
+        <p class="section-lbl">Composición de las gestiones (100%) — clic en un segmento para filtrar</p>
+        <div style="height:250px;position:relative"><canvas id="ag-ch-comp"></canvas></div>
       </div>
       <div class="filtros-bar">
-        <input class="filtro-input" id="ag-f-texto" placeholder="🔍 Buscar cuenta, oportunidad o ciudad..."/>
+        <input class="filtro-input" id="ag-f-texto" placeholder="🔍 Buscar cuenta, oportunidad, contacto o nota..."/>
         <select class="filtro-select" id="ag-f-mes"><option value="">Mes: Todos</option></select>
         <select class="filtro-select" id="ag-f-rep" style="${esAdmin() ? "" : "display:none"}"><option value="">Rep: Todos</option></select>
         <select class="filtro-select" id="ag-f-tipo">
@@ -399,10 +497,20 @@ function pintarEstructura() {
           <option>Retail</option>
           <option>Corporativo</option>
         </select>
-        <select class="filtro-select" id="ag-f-modalidad">
+        <select class="filtro-select" id="ag-f-negocio">
           <option value="">Modalidad: Todas</option>
+          <option>Venta</option>
+          <option>Renta</option>
+        </select>
+        <select class="filtro-select" id="ag-f-modalidad">
+          <option value="">Reunión: Todas</option>
           <option>Virtual</option>
           <option>Presencial</option>
+        </select>
+        <select class="filtro-select" id="ag-f-sector">
+          <option value="">Sector: Todos</option>
+          <option>Público</option>
+          <option>Privado</option>
         </select>
         <select class="filtro-select" id="ag-f-etapa"><option value="">Etapa: Todas</option>
           ${ETAPAS.map(e => `<option>${e}</option>`).join("")}
@@ -414,15 +522,30 @@ function pintarEstructura() {
       <div class="card" id="ag-lista"></div>
     </div>
 
-    <!-- ═══ EVOLUCIÓN MENSUAL ═══ -->
+    <!-- ═══ HISTÓRICO (comparativo de meses) ═══ -->
     <div id="ag-sub-cmp" style="display:none">
+      <div class="his-ctrl">
+        <select class="filtro-select" id="his-fy"></select>
+        <select class="filtro-select" id="his-ind">
+          ${Object.entries(INDICADORES).map(([k, i]) => `<option value="${k}">${i.t}</option>`).join("")}
+        </select>
+        <select class="filtro-select" id="his-mes"></select>
+        <select class="filtro-select" id="his-rep" style="${esAdmin() ? "" : "display:none"}"><option value="">Rep: Todo el equipo</option></select>
+      </div>
+      <div class="his-kpis" id="his-kpis"></div>
       <div class="card">
-        <p class="section-lbl">Evolución mes a mes — comerciales, operativas y clientes nuevos (clic en un mes abre su reporte)</p>
-        <div style="height:240px;position:relative"><canvas id="evo-ch"></canvas></div>
+        <p class="section-lbl" id="his-ch-tit">Mes a mes</p>
+        <p class="hint" style="margin:0 0 8px">💡 Clic en una barra para seleccionar el mes. La línea punteada es el promedio de los meses cerrados.</p>
+        <div style="height:250px;position:relative"><canvas id="evo-ch"></canvas></div>
       </div>
       <div class="card">
-        <p class="section-lbl">Cuentas únicas y visitas presenciales por mes</p>
-        <div style="height:200px;position:relative"><canvas id="evo-ch2"></canvas></div>
+        <p class="section-lbl">Comparativo histórico — todos los indicadores, mes a mes</p>
+        <p class="hint" style="margin:0 0 8px">💡 Color más intenso = mes más alto del indicador. Debajo de cada valor, la variación vs el mes anterior. Clic en un mes o en un indicador para analizarlo arriba.</p>
+        <div class="tbl-wrap"><table class="his-tbl" id="his-tabla"></table></div>
+      </div>
+      <div class="card" id="his-rep-card">
+        <p class="section-lbl" id="his-rep-tit">Por rep, mes a mes</p>
+        <div class="tbl-wrap"><table class="his-tbl" id="his-rep-tabla"></table></div>
       </div>
       <div class="card">
         <p class="section-lbl">Comparar dos meses en detalle</p>
@@ -432,10 +555,7 @@ function pintarEstructura() {
           <select class="filtro-select" id="cmp-b"></select>
         </div>
         <table class="cmp-tbl" id="cmp-tabla"></table>
-      </div>
-      <div class="card">
-        <p class="section-lbl">Gestiones por rep en cada mes</p>
-        <div style="height:230px;position:relative"><canvas id="cmp-ch"></canvas></div>
+        <div style="height:230px;position:relative;margin-top:14px"><canvas id="cmp-ch"></canvas></div>
       </div>
     </div>
 
@@ -450,37 +570,66 @@ function pintarEstructura() {
           <div class="form-grid">
             <div class="form-group"><label class="form-label">Rep *</label>
               <select class="form-select" id="ag-c-rep"></select></div>
-            <div class="form-group"><label class="form-label">Ciudad *</label>
-              <input class="form-input" id="ag-c-ciudad" list="ag-dl-ciudad" placeholder="Ciudad"/>
-              <datalist id="ag-dl-ciudad"></datalist></div>
+            <div class="form-group"><label class="form-label">Ciudad</label>
+              <input class="form-input ag-ro" id="ag-c-ciudad" value="${CIUDAD_FIJA}" readonly tabindex="-1"/></div>
             <div class="form-group"><label class="form-label">Fecha *</label>
               <input class="form-input" id="ag-c-fecha" type="date"/></div>
             <div class="form-group"><label class="form-label">Hora</label>
               <input class="form-input" id="ag-c-hora" type="time"/></div>
-            <div class="form-group full"><label class="form-label">Cuenta / Cliente *</label>
-              <input class="form-input" id="ag-c-cuenta" list="ag-dl-cuenta" placeholder="Nombre del cliente"/>
-              <datalist id="ag-dl-cuenta"></datalist></div>
+
+            <!-- 🏢 CUENTA: existente o nueva · contacto -->
+            <div class="cta-box">
+              <label class="form-label">Cuenta / Cliente *</label>
+              <div class="seg" role="tablist">
+                <button type="button" id="ag-cta-modo-ex" class="on">🔁 Cuenta existente</button>
+                <button type="button" id="ag-cta-modo-nu">✨ Registrar nueva</button>
+              </div>
+              <input class="form-input" id="ag-c-cuenta" list="ag-dl-cuenta" placeholder="Escribe para buscar la cuenta…" autocomplete="off" style="width:100%"/>
+              <datalist id="ag-dl-cuenta"></datalist>
+              <div class="cta-res" id="ag-cta-res"></div>
+              <div class="form-grid" id="ag-cta-campos" style="margin-top:10px;display:none">
+                <div class="form-group" id="ag-canal-wrap"><label class="form-label">Canal *</label>
+                  <select class="form-select" id="ag-c-canal">
+                    <option value="">— Selecciona —</option>
+                    <option value="Retail">🏪 Retail</option>
+                    <option value="Corporativo">🏢 Corporativo</option>
+                  </select></div>
+                <div class="form-group" id="ag-sector-wrap"><label class="form-label">Sector *</label>
+                  <select class="form-select" id="ag-c-sector">
+                    <option value="">— Selecciona —</option>
+                    ${SECTORES.map(x => `<option value="${x}">${SECTOR_TXT[x]}</option>`).join("")}
+                  </select></div>
+              </div>
+              <div class="cta-sub" id="ag-cta-sub"></div>
+
+              <div id="ag-ct-wrap" style="margin-top:12px;display:none">
+                <label class="form-label">👤 Contacto</label>
+                <select class="form-select" id="ag-c-contacto" style="width:100%"></select>
+                <div class="ct-info" id="ag-ct-info"></div>
+                <div class="form-grid" id="ag-ct-nuevo" style="margin-top:10px;display:none">
+                  <div class="form-group"><label class="form-label">Nombre *</label><input class="form-input" id="ag-c-ct-nombre" maxlength="120"/></div>
+                  <div class="form-group"><label class="form-label">Cargo</label><input class="form-input" id="ag-c-ct-cargo" maxlength="120"/></div>
+                  <div class="form-group"><label class="form-label">Correo</label><input class="form-input" id="ag-c-ct-correo" type="email" maxlength="160"/></div>
+                  <div class="form-group"><label class="form-label">Teléfono</label><input class="form-input" id="ag-c-ct-tel" type="tel" maxlength="40"/></div>
+                </div>
+              </div>
+            </div>
+
             <div class="form-group full"><label class="form-label">Oportunidad *</label>
               <input class="form-input" id="ag-c-oportunidad" placeholder="Ej: Renovación contrato anual"/></div>
-            <div class="form-group"><label class="form-label">Tipo de cliente *</label>
-              <select class="form-select" id="ag-c-tipoCliente">
-                <option value="">— Selecciona —</option>
-                <option value="Nuevo">✨ Nuevo</option>
-                <option value="Existente">🔁 Existente</option>
-              </select></div>
-            <div class="form-group"><label class="form-label">Canal *</label>
-              <select class="form-select" id="ag-c-canal">
-                <option value="">— Selecciona —</option>
-                <option value="Retail">🏪 Retail</option>
-                <option value="Corporativo">🏢 Corporativo</option>
-              </select></div>
             <div class="form-group"><label class="form-label">Modalidad *</label>
+              <select class="form-select" id="ag-c-negocio">
+                <option value="">— Selecciona —</option>
+                <option value="Venta">🛒 Venta</option>
+                <option value="Renta">🔑 Renta</option>
+              </select></div>
+            <div class="form-group"><label class="form-label">Tipo de reunión *</label>
               <select class="form-select" id="ag-c-modalidad">
                 <option value="">— Selecciona —</option>
-                <option value="Virtual">💻 Virtual</option>
                 <option value="Presencial">🤝 Presencial</option>
+                <option value="Virtual">💻 Virtual</option>
               </select></div>
-            <div class="form-group"><label class="form-label">Tipo de gestión *</label>
+            <div class="form-group full"><label class="form-label">Tipo de gestión *</label>
               <select class="form-select" id="ag-c-tipo">
                 <option value="">— Selecciona —</option>
                 <option value="Comercial">💼 Comercial</option>
@@ -536,7 +685,8 @@ function pintarEstructura() {
             </div>
 
             <div class="form-group full"><label class="form-label">Descripción / Notas</label>
-              <textarea class="form-input" id="ag-c-notas" rows="3" maxlength="500" placeholder="¿Qué pasó en la visita?"></textarea></div>
+              <textarea class="form-input" id="ag-c-notas" rows="3" maxlength="1000" placeholder="¿Qué pasó en la visita? ¿Cuál es el siguiente paso?"></textarea></div>
+            <div class="hist-box" id="ag-hist" style="display:none"></div>
           </div>
           <div class="login-error" id="ag-modal-error"></div>
         </div>
@@ -589,19 +739,30 @@ function pintarEstructura() {
   $("ag-c-etapa").addEventListener("change", sugerirEstadoDesdeEtapa);
   $("ag-c-sprint").addEventListener("change", alCambiarSprint);
   $("ag-c-deal").addEventListener("change", alCambiarDeal);
+  // Cuenta existente / nueva + contacto
+  $("ag-cta-modo-ex").addEventListener("click", () => ponerModoCuenta("existente"));
+  $("ag-cta-modo-nu").addEventListener("click", () => ponerModoCuenta("nueva"));
+  $("ag-c-cuenta").addEventListener("input", () => { histLimite = 8; alCambiarCuenta(); });
+  $("ag-c-contacto").addEventListener("change", alCambiarContacto);
 
   // Filtros del mensual
   $("ag-f-texto").addEventListener("input", (e) => { filtros.texto = e.target.value.toLowerCase(); renderMensual(); });
-  [["ag-f-mes","mes"],["ag-f-rep","rep"],["ag-f-tipo","tipo"],["ag-f-etapa","etapa"],["ag-f-canal","canal"],["ag-f-modalidad","modalidad"]].forEach(([id, clave]) => {
+  [["ag-f-mes","mes"],["ag-f-rep","rep"],["ag-f-tipo","tipo"],["ag-f-etapa","etapa"],["ag-f-canal","canal"],["ag-f-modalidad","modalidad"],["ag-f-negocio","negocio"],["ag-f-sector","sector"]].forEach(([id, clave]) => {
     $(id).addEventListener("change", (e) => { filtros[clave] = e.target.value; renderMensual(); });
   });
   $("ag-f-limpiar").addEventListener("click", () => {
     Object.keys(filtros).forEach(k => filtros[k] = "");
     $("ag-f-texto").value = "";
-    ["ag-f-mes","ag-f-rep","ag-f-tipo","ag-f-etapa","ag-f-canal","ag-f-modalidad"].forEach(id => $(id).value = "");
+    ["ag-f-mes","ag-f-rep","ag-f-tipo","ag-f-etapa","ag-f-canal","ag-f-modalidad","ag-f-negocio","ag-f-sector"].forEach(id => $(id).value = "");
     renderMensual();
   });
   $("ag-btn-csv").addEventListener("click", exportarCSVAgenda);
+
+  // Histórico
+  $("his-fy").addEventListener("change", (e) => { hisFY = parseInt(e.target.value, 10); hisMes = ""; renderHistorico(); });
+  $("his-ind").addEventListener("change", (e) => { hisInd = e.target.value; renderHistorico(); });
+  $("his-mes").addEventListener("change", (e) => { hisMes = e.target.value; renderHistorico(); });
+  $("his-rep").addEventListener("change", (e) => { hisRep = e.target.value; renderHistorico(); });
 
   // Comparar
   $("cmp-a").addEventListener("change", (e) => { cmpA = e.target.value; renderComparar(); });
@@ -671,13 +832,9 @@ function actualizarOpcionesFiltros() {
   llenarCmp("cmp-a", cmpA);
   llenarCmp("cmp-b", cmpB);
 
-  const dl = (id, campo) => {
-    const vals = [...new Set(baseGestiones().map(g => String(g[campo] || "").trim()).filter(Boolean))].sort();
-    const el = $(id);
-    if (el) el.innerHTML = vals.map(v => `<option value="${esc(v)}">`).join("");
-  };
-  dl("ag-dl-ciudad", "ciudad");
-  dl("ag-dl-cuenta", "cuenta");
+  const selHisRep = $("his-rep");
+  if (selHisRep) selHisRep.innerHTML = `<option value="">Rep: Todo el equipo</option>` +
+    reps.map(r => `<option ${r === hisRep ? "selected" : ""}>${esc(r)}</option>`).join("");
 }
 
 // ═══════════════════════════════════════════
@@ -734,6 +891,234 @@ function sugerirEstadoDesdeEtapa() {
 }
 
 // ═══════════════════════════════════════════
+// 🏢 CUENTAS: índice único de clientes (v5)
+// Une 4 fuentes para saber si una cuenta YA EXISTE y qué se sabe de ella:
+//   1. Ficha (colección `cuentas`)  → canal, sector, contactos
+//   2. Gestiones de la agenda       → canal/sector/contacto más recientes
+//   3. Oportunidades del pipeline   → segmento Retail/Corporativo
+//   4. Base instalada del sprint    → contacto
+// La llave es idCuenta(nombre): sin tildes, mayúsculas ni signos.
+// ═══════════════════════════════════════════
+let indice = new Map();
+
+function normSeg(v) {
+  const t = String(v || "").trim().toLowerCase();
+  if (t === "retail") return "Retail";
+  if (t === "corporativo") return "Corporativo";
+  return "";
+}
+function normSector(v) {
+  const t = normNombre(v);
+  if (t.startsWith("pub") || t.startsWith("gob")) return "Público";
+  if (t.startsWith("priv")) return "Privado";
+  return "";
+}
+
+function construirIndice() {
+  const m = new Map();
+  const tomar = (nombre) => {
+    const n = String(nombre || "").trim();
+    if (!n) return null;
+    const k = idCuenta(n);
+    if (!m.has(k)) m.set(k, { clave: k, nombre: n, fichaId: null, canal: "", sector: "", contactos: [], nGestiones: 0, ultima: "", enPipeline: false, enSprint: false });
+    return m.get(k);
+  };
+  const sumarContacto = (c, ct) => {
+    const nom = String(ct?.nombre || "").trim();
+    if (!c || !nom) return;
+    const ya = c.contactos.find(x => normNombre(x.nombre) === normNombre(nom));
+    if (ya) {   // completa datos que falten
+      ["cargo", "correo", "telefono"].forEach(k => { if (!ya[k] && ct[k]) ya[k] = ct[k]; });
+      return;
+    }
+    c.contactos.push({ nombre: nom, cargo: ct.cargo || "", correo: ct.correo || "", telefono: ct.telefono || "", fecha: ct.fecha || "" });
+  };
+
+  // 1. Fichas (mandan sobre el nombre oficial, canal y sector)
+  fichas.forEach(f => {
+    const c = tomar(f.nombre || f.id);
+    if (!c) return;
+    c.nombre = f.nombre || c.nombre;
+    c.fichaId = f.id;
+    c.canal = normSeg(f.canal);
+    c.sector = normSector(f.sector);
+    [...(f.contactos || [])].sort((a, b) => String(b.fecha || "").localeCompare(String(a.fecha || ""))).forEach(ct => sumarContacto(c, ct));
+  });
+  // 2. Gestiones (de la más reciente a la más antigua)
+  [...gestiones].sort((a, b) => String(b.fecha || "").localeCompare(String(a.fecha || ""))).forEach(g => {
+    const c = tomar(g.cuenta);
+    if (!c) return;
+    c.nGestiones++;
+    if (!c.ultima) c.ultima = g.fecha || "";
+    if (!c.canal) c.canal = normSeg(g.canal);
+    if (!c.sector) c.sector = normSector(g.sector);
+    if (g.contactoNombre) sumarContacto(c, { nombre: g.contactoNombre, cargo: g.contactoCargo, correo: g.contactoCorreo, telefono: g.contactoTelefono, fecha: g.fecha });
+  });
+  // 3. Pipeline
+  deals.forEach(d => {
+    const c = tomar(d.cuenta);
+    if (!c) return;
+    c.enPipeline = true;
+    if (!c.canal) c.canal = normSeg(d.segmento) || normSeg(d.canal);
+  });
+  // 4. Base instalada del sprint
+  cuentasSprint.forEach(cs => {
+    const c = tomar(cs.cuenta);
+    if (!c) return;
+    c.enSprint = true;
+    if (cs.contactoNombre) sumarContacto(c, { nombre: cs.contactoNombre, cargo: cs.contactoCargo, correo: cs.contactoCorreo, telefono: cs.contactoTelefono });
+  });
+  indice = m;
+}
+
+function infoCuenta(nombre) { return nombre ? indice.get(idCuenta(nombre)) || null : null; }
+
+function refrescarCuentas() {
+  construirIndice();
+  const el = $("ag-dl-cuenta");
+  if (el) el.innerHTML = [...indice.values()]
+    .sort((a, b) => a.nombre.localeCompare(b.nombre, "es"))
+    .map(c => `<option value="${esc(c.nombre)}">`).join("");
+  // Si el modal está abierto, refresca el estado de la cuenta sin perder lo escrito
+  if ($("ag-modal")?.classList.contains("open")) alCambiarCuenta(true);
+}
+
+function ponerModoCuenta(modo) {
+  modoCuenta = modo;
+  $("ag-cta-modo-ex").classList.toggle("on", modo === "existente");
+  $("ag-cta-modo-nu").classList.toggle("on", modo === "nueva");
+  $("ag-c-cuenta").placeholder = modo === "existente" ? "Escribe para buscar la cuenta…" : "Nombre de la cuenta nueva";
+  $("ag-c-cuenta").setAttribute("list", modo === "existente" ? "ag-dl-cuenta" : "");
+  if (modo === "nueva") { $("ag-c-canal").value = ""; $("ag-c-sector").value = ""; }
+  alCambiarCuenta();
+  $("ag-c-cuenta").focus();
+}
+
+// conservar = true: no reinicia el contacto elegido (refresco en vivo)
+function alCambiarCuenta(conservar) {
+  const nombre = $("ag-c-cuenta").value.trim();
+  const info = infoCuenta(nombre);
+  const res = $("ag-cta-res"), campos = $("ag-cta-campos"), sub = $("ag-cta-sub");
+  let mostrarCanal = false, mostrarSector = false, mostrarContactos = false;
+  sub.textContent = "";
+
+  const chips = (c, tipoCli) => [
+    chip(tipoCli === "Nuevo" ? "✨ Cliente nuevo" : "🔁 Cliente existente", tipoCli === "Nuevo" ? "#CCFBF1" : "#EFF6FF", tipoCli === "Nuevo" ? "#0f766e" : "#1d4ed8"),
+    c?.canal ? chip(c.canal === "Retail" ? "🏪 Retail" : "🏢 Corporativo", "#F3F4F6", "#374151") : "",
+    c?.sector ? chip(SECTOR_TXT[c.sector], "#F3F4F6", "#374151") : "",
+    c?.nGestiones ? `<span class="hist-meta">${c.nGestiones} gestión(es)${c.ultima ? " · última " + esc(c.ultima) : ""}</span>` : "",
+    c?.enPipeline ? chip("🔗 En pipeline", "#EFF6FF", "#1d4ed8") : "",
+    c?.enSprint ? chip("🚀 Base instalada", "#FEF3C7", "#92400e") : ""
+  ].join("");
+
+  if (modoCuenta === "existente") {
+    if (nombre.length < 2) {
+      res.innerHTML = `<span class="hist-meta">Escribe el nombre y elige la cuenta de la lista. Si no aparece, usa “✨ Registrar nueva”.</span>`;
+    } else if (info) {
+      res.innerHTML = `<span class="ok">✓ ${esc(info.nombre)}</span>` + chips(info, "Existente");
+      mostrarCanal = !info.canal; mostrarSector = !info.sector; mostrarContactos = true;
+      if (mostrarCanal || mostrarSector) sub.textContent = "Falta un dato de esta cuenta: complétalo una vez y quedará guardado en su ficha.";
+    } else {
+      res.innerHTML = `<span class="warn">⚠ No encontramos “${esc(nombre)}”.</span><button type="button" id="ag-cta-anueva">✨ Registrarla como nueva</button>`;
+      $("ag-cta-anueva").addEventListener("click", () => ponerModoCuenta("nueva"));
+    }
+  } else {
+    if (info) {
+      res.innerHTML = `<span class="warn">⚠ “${esc(info.nombre)}” ya existe.</span><button type="button" id="ag-cta-aex">Usar la cuenta existente</button>`;
+      $("ag-cta-aex").addEventListener("click", () => { $("ag-c-cuenta").value = info.nombre; ponerModoCuenta("existente"); });
+    } else {
+      res.innerHTML = nombre.length >= 2 ? chips(null, "Nuevo") : `<span class="hist-meta">Escribe el nombre de la cuenta nueva y su canal y sector.</span>`;
+      mostrarCanal = true; mostrarSector = true; mostrarContactos = nombre.length >= 2;
+    }
+  }
+  campos.style.display = (mostrarCanal || mostrarSector) ? "grid" : "none";
+  $("ag-canal-wrap").style.display = mostrarCanal ? "flex" : "none";
+  $("ag-sector-wrap").style.display = mostrarSector ? "flex" : "none";
+  $("ag-ct-wrap").style.display = mostrarContactos ? "block" : "none";
+  if (!conservar) poblarContactos(info && modoCuenta === "existente" ? info : null);
+  renderHistorialCuenta(info && modoCuenta === "existente" ? info.clave : "");
+}
+
+// Copia de los contactos que se pintaron en el selector (así un refresco
+// en vivo no cambia a qué contacto apunta cada opción).
+let contactosModal = [];
+function contactosActuales() { return contactosModal; }
+
+function poblarContactos(info, preferido) {
+  const lista = info ? [...info.contactos] : [];
+  contactosModal = lista;
+  const sel = $("ag-c-contacto");
+  sel.innerHTML = `<option value="">— Sin contacto —</option>` +
+    lista.map((c, i) => `<option value="c${i}">${esc(c.nombre)}${c.cargo ? " · " + esc(c.cargo) : ""}</option>`).join("") +
+    `<option value="__nuevo__">➕ Agregar nuevo contacto</option>`;
+  let val = "";
+  if (preferido) {
+    const i = lista.findIndex(c => normNombre(c.nombre) === normNombre(preferido));
+    val = i >= 0 ? "c" + i : "";
+  } else if (lista.length) val = "c0";
+  else if (modoCuenta === "nueva") val = "__nuevo__";
+  sel.value = val;
+  ["ag-c-ct-nombre", "ag-c-ct-cargo", "ag-c-ct-correo", "ag-c-ct-tel"].forEach(id => $(id).value = "");
+  alCambiarContacto();
+}
+
+function alCambiarContacto() {
+  const v = $("ag-c-contacto").value;
+  $("ag-ct-nuevo").style.display = v === "__nuevo__" ? "grid" : "none";
+  const info = $("ag-ct-info");
+  if (v && v !== "__nuevo__") {
+    const c = contactosActuales()[parseInt(v.slice(1), 10)];
+    info.innerHTML = c ? [
+      c.cargo ? esc(c.cargo) : "",
+      c.correo ? `✉️ <a href="mailto:${esc(c.correo)}">${esc(c.correo)}</a>` : "",
+      c.telefono ? `📞 <a href="tel:${esc(c.telefono)}">${esc(c.telefono)}</a>` : ""
+    ].filter(Boolean).join(" · ") || `<span class="hist-meta">Sin correo ni teléfono registrados.</span>` : "";
+  } else info.innerHTML = v === "__nuevo__" ? `<span class="hist-meta">Se guardará en la ficha de la cuenta para las próximas gestiones.</span>` : "";
+}
+
+// Contacto elegido en el modal → { contacto, esNuevo } o error
+function leerContacto() {
+  const v = $("ag-c-contacto").value;
+  if ($("ag-ct-wrap").style.display === "none" || !v) return { contacto: null };
+  if (v === "__nuevo__") {
+    const nombre = $("ag-c-ct-nombre").value.trim();
+    const correo = $("ag-c-ct-correo").value.trim();
+    if (!nombre) return { error: "Escribe el nombre del contacto o elige “— Sin contacto —”." };
+    if (correo && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(correo)) return { error: "El correo del contacto no es válido." };
+    return { contacto: { nombre, cargo: $("ag-c-ct-cargo").value.trim(), correo, telefono: $("ag-c-ct-tel").value.trim() }, esNuevo: true };
+  }
+  const c = contactosActuales()[parseInt(v.slice(1), 10)];
+  return { contacto: c || null };
+}
+
+// 🗒 Historial de notas de la cuenta (Gerencia ve todo el equipo;
+// un vendedor ve sus propias gestiones, igual que en el resto de la agenda)
+function renderHistorialCuenta(clave) {
+  const box = $("ag-hist");
+  if (!box) return;
+  if (!clave) { box.style.display = "none"; box.innerHTML = ""; return; }
+  const lista = baseGestiones()
+    .filter(g => g.id !== editandoId && idCuenta(g.cuenta) === clave)
+    .sort((a, b) => (String(b.fecha || "") + String(b.hora || "")).localeCompare(String(a.fecha || "") + String(a.hora || "")));
+  if (!lista.length) {
+    box.style.display = "block";
+    box.innerHTML = `<div class="hist-tit"><span>🗒 Historial de la cuenta</span></div><div class="hist-it hist-meta">Aún no hay gestiones anteriores${esAdmin() ? "" : " tuyas"} con esta cuenta.</div>`;
+    return;
+  }
+  const visibles = lista.slice(0, histLimite);
+  box.style.display = "block";
+  box.innerHTML = `<div class="hist-tit"><span>🗒 Historial de la cuenta</span><span class="hist-meta">${lista.length} gestión(es)</span></div>` +
+    visibles.map(g => `<div class="hist-it">
+      <span class="hist-fecha">${esc(g.fecha || "")}</span>
+      <span class="hist-meta"> · ${esc((g.rep || "").split(" ")[0])} · ${esc(g.tipo || "")}${etapaDe(g) ? " · " + esc(etapaDe(g)) : ""}${g.negocio ? " · " + esc(g.negocio) : ""}${g.contactoNombre ? " · 👤 " + esc(g.contactoNombre) : ""}</span>
+      <div class="hist-nota">${g.notas ? esc(g.notas) : `<i class="hist-meta">Sin notas</i>`}</div>
+    </div>`).join("") +
+    (lista.length > histLimite ? `<button type="button" class="hist-mas" id="ag-hist-mas">Ver ${Math.min(10, lista.length - histLimite)} más ▾</button>` : "");
+  const mas = $("ag-hist-mas");
+  if (mas) mas.addEventListener("click", () => { histLimite += 10; renderHistorialCuenta(clave); });
+}
+
+// ═══════════════════════════════════════════
 // RENDER GENERAL
 // ═══════════════════════════════════════════
 function render() {
@@ -741,7 +1126,7 @@ function render() {
   renderEquipo();
   renderSemana();
   renderMensual();
-  renderEvolucion();
+  renderHistorico();
   renderComparar();
 }
 
@@ -1043,17 +1428,21 @@ function renderSemana() {
 // ═══════════════════════════════════════════
 // 📊 MENSUAL (interactivo)
 // ═══════════════════════════════════════════
-function filtrarMensual() {
+// mesForzado: permite calcular lo mismo para otro mes (variación vs mes anterior)
+function filtrarMensual(mesForzado) {
+  const mes = mesForzado !== undefined ? mesForzado : filtros.mes;
   return baseGestiones().filter(g => {
-    if (filtros.mes && mesDe(g) !== filtros.mes) return false;
+    if (mes && mesDe(g) !== mes) return false;
     if (filtros.rep && g.rep !== filtros.rep) return false;
     if (filtros.tipo && g.tipo !== filtros.tipo) return false;
     if (filtros.canal && g.canal !== filtros.canal) return false;
     if (filtros.modalidad && g.modalidad !== filtros.modalidad) return false;
+    if (filtros.negocio && g.negocio !== filtros.negocio) return false;
+    if (filtros.sector && g.sector !== filtros.sector) return false;
     if (filtros.etapa && etapaDe(g) !== filtros.etapa) return false;
     if (filtros.tipoCliente && g.tipoCliente !== filtros.tipoCliente) return false;
     if (filtros.texto) {
-      const blob = ((g.cuenta || "") + " " + (g.oportunidad || "") + " " + (g.ciudad || "")).toLowerCase();
+      const blob = [g.cuenta, g.oportunidad, g.ciudad, g.contactoNombre, g.notas].map(x => x || "").join(" ").toLowerCase();
       if (!blob.includes(filtros.texto)) return false;
     }
     return true;
@@ -1062,7 +1451,7 @@ function filtrarMensual() {
 
 // Exporta a CSV las gestiones visibles con los filtros del reporte mensual
 function exportarCSVAgenda() {
-  const cols = ["fecha","hora","rep","cuenta","oportunidad","tipo","etapa","tipoCliente","canal","modalidad","ciudad","notas","dealId"];
+  const cols = ["fecha","hora","rep","cuenta","oportunidad","tipo","etapa","negocio","tipoCliente","canal","sector","modalidad","contactoNombre","contactoCargo","contactoCorreo","contactoTelefono","ciudad","notas","dealId"];
   const celda = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
   const filas = filtrarMensual().map(g => cols.map(k => {
     if (k === "etapa") return etapaDe(g);
@@ -1078,6 +1467,106 @@ function exportarCSVAgenda() {
   toast(`⬇ CSV exportado: ${filas.length} gestiones`);
 }
 
+// Gestiones de una lista cuya fecha cae en los días 1..dia de su mes
+function hastaDia(lista, dia) { return lista.filter(g => parseInt(String(g.fecha || "").slice(8, 10), 10) <= dia); }
+function claveMesHoy() { const h = new Date(); return `${h.getFullYear()}-${pad(h.getMonth() + 1)}`; }
+function mesAnterior(clave) {
+  const [a, m] = clave.split("-").map(Number);
+  return m === 1 ? `${a - 1}-12` : `${a}-${pad(m - 1)}`;
+}
+function mesSumar(clave, n) {
+  const [a, m] = clave.split("-").map(Number);
+  const d = new Date(a, m - 1 + n, 1);
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}`;
+}
+// "▲ +12%" / "▼ -8%" / "=" con color
+function deltaTxt(actual, antes) {
+  if (!antes && !actual) return `<span class="eq">=</span>`;
+  if (!antes) return `<span class="up">▲ +${actual}</span>`;
+  const pct = Math.round((actual - antes) / antes * 100);
+  if (pct > 0) return `<span class="up">▲ +${pct}%</span>`;
+  if (pct < 0) return `<span class="down">▼ ${pct}%</span>`;
+  return `<span class="eq">= 0%</span>`;
+}
+
+// Gráfica de composición: barras horizontales apiladas al 100%.
+const DIM_COMP = [
+  { fila: "Tipo de gestión", clave: "tipo", campo: g => g.tipo, ops: [["Comercial", "#2563EB"], ["Operativo", "#9b9b96"]] },
+  { fila: "Modalidad", clave: "negocio", campo: g => g.negocio, ops: [["Venta", "#16a34a"], ["Renta", "#4f46e5"]] },
+  { fila: "Reunión", clave: "modalidad", campo: g => g.modalidad, ops: [["Presencial", "#d97706"], ["Virtual", "#0d9488"]] },
+  { fila: "Cliente", clave: "tipoCliente", campo: g => g.tipoCliente, ops: [["Nuevo", "#7c3aed"], ["Existente", "#60a5fa"]] },
+  { fila: "Canal", clave: "canal", campo: g => normSeg(g.canal), ops: [["Corporativo", "#1e3a8a"], ["Retail", "#f59e0b"]] },
+  { fila: "Sector", clave: "sector", campo: g => g.sector, ops: [["Privado", "#0f766e"], ["Público", "#dc2626"]] }
+];
+const SIN_DATO = "#e5e5e0";
+function renderComposicion(lista) {
+  const filas = DIM_COMP.map(d => d.fila);
+  const datasets = [];
+  DIM_COMP.forEach((d, fi) => {
+    const tot = lista.length || 1;
+    let cubiertos = 0;
+    d.ops.forEach(([op, color]) => {
+      const n = lista.filter(g => d.campo(g) === op).length;
+      cubiertos += n;
+      const data = filas.map((_, j) => j === fi ? n / tot * 100 : null);
+      datasets.push({ label: op, data, n: filas.map((_, j) => j === fi ? n : 0), dim: d, backgroundColor: color, borderWidth: 0, borderSkipped: false, barPercentage: 0.72 });
+    });
+    const sin = lista.length - cubiertos;
+    datasets.push({ label: "Sin dato", data: filas.map((_, j) => j === fi ? sin / tot * 100 : null), n: filas.map((_, j) => j === fi ? sin : 0), dim: null, backgroundColor: SIN_DATO, borderWidth: 0, barPercentage: 0.72 });
+  });
+  const etiquetas = {
+    id: "etiquetasComp",
+    afterDatasetsDraw(chart) {
+      const { ctx } = chart;
+      ctx.save();
+      ctx.font = "600 11px system-ui, sans-serif";
+      ctx.textBaseline = "middle";
+      chart.data.datasets.forEach((ds, i) => {
+        chart.getDatasetMeta(i).data.forEach((bar, j) => {
+          const v = ds.data[j];
+          if (!v) return;
+          const ancho = Math.abs(bar.x - bar.base);
+          const txt = `${ds.label} ${Math.round(v)}%`;
+          const corto = `${Math.round(v)}%`;
+          const w = ctx.measureText(txt).width;
+          const t = w + 10 < ancho ? txt : (ctx.measureText(corto).width + 8 < ancho ? corto : "");
+          if (!t) return;
+          ctx.fillStyle = ds.backgroundColor === SIN_DATO || ds.backgroundColor === "#60a5fa" || ds.backgroundColor === "#f59e0b" ? "#1a1a18" : "#fff";
+          ctx.textAlign = "center";
+          ctx.fillText(t, (bar.x + bar.base) / 2, bar.y);
+        });
+      });
+      ctx.restore();
+    }
+  };
+  mkChart("ag-ch-comp", {
+    type: "bar",
+    data: { labels: filas, datasets },
+    plugins: [etiquetas],
+    options: {
+      indexAxis: "y", responsive: true, maintainAspectRatio: false,
+      onClick: (evt, elems) => {
+        if (!elems.length) return;
+        const ds = datasets[elems[0].datasetIndex];
+        if (!ds.dim) return;
+        const clave = ds.dim.clave, val = ds.label;
+        filtros[clave] = filtros[clave] === val ? "" : val;
+        const sel = { tipo: "ag-f-tipo", negocio: "ag-f-negocio", modalidad: "ag-f-modalidad", canal: "ag-f-canal", sector: "ag-f-sector" }[clave];
+        if (sel) $(sel).value = filtros[clave];
+        renderMensual();
+      },
+      plugins: {
+        legend: { display: false },
+        tooltip: { filter: (it) => it.raw != null && it.raw > 0, callbacks: { label: (it) => ` ${it.dataset.label}: ${it.dataset.n[it.dataIndex]} (${Math.round(it.raw)}%)` } }
+      },
+      scales: {
+        x: { stacked: true, max: 100, ticks: { callback: v => v + "%" }, grid: { color: "rgba(0,0,0,.05)" } },
+        y: { stacked: true, grid: { display: false }, ticks: { font: { size: 12, weight: 600 } } }
+      }
+    }
+  });
+}
+
 function renderMensual() {
   const visibles = filtrarMensual();
 
@@ -1086,32 +1575,45 @@ function renderMensual() {
   const cuentas = new Set(visibles.map(g => String(g.cuenta || "").trim()).filter(Boolean));
   const clientesNuevos = visibles.filter(g => g.tipoCliente === "Nuevo").length;
 
+  // Variación vs el mes anterior (con los mismos filtros)
+  const prevMes = filtros.mes ? mesAnterior(filtros.mes) : "";
+  const enCurso = filtros.mes && filtros.mes === claveMesHoy();
+  const diaHoy = new Date().getDate();
+  // Mes en curso → se compara contra el mes anterior hasta el mismo día
+  const prev = prevMes ? (enCurso ? hastaDia(filtrarMensual(prevMes), diaHoy) : filtrarMensual(prevMes)) : null;
+  const vs = (actual, fn) => {
+    if (!prev) return "";
+    const antes = fn(prev);
+    return `<div class="m-sub">${deltaTxt(actual, antes)} vs ${MESES_NOMBRE[parseInt(prevMes.slice(5)) - 1].slice(0, 3)}${enCurso ? " al " + diaHoy : ""} (${antes})</div>`;
+  };
+  const cuentasN = (l) => new Set(l.map(g => normNombre(g.cuenta)).filter(Boolean)).size;
+
   $("ag-metricas").innerHTML = `
     <div class="m-card clic" id="mc-todas">
       <div class="m-lbl">Gestiones</div>
       <div class="m-val" style="color:var(--blue)">${visibles.length}</div>
-      <div class="m-sub">${filtros.mes ? nombreMes(filtros.mes) : "todo el histórico"}</div></div>
+      <div class="m-sub">${filtros.mes ? nombreMes(filtros.mes) + (enCurso ? " · en curso" : "") : "todo el histórico"}</div>
+      ${vs(visibles.length, l => l.length)}</div>
     <div class="m-card clic ${filtros.tipo === "Comercial" ? "activa" : ""}" id="mc-com">
       <div class="m-lbl">Comerciales</div>
       <div class="m-val" style="color:var(--green)">${comerciales.length}</div>
-      <div class="m-sub">clic para filtrar</div></div>
+      ${vs(comerciales.length, l => l.filter(g => g.tipo === "Comercial").length) || `<div class="m-sub">clic para filtrar</div>`}</div>
     <div class="m-card clic ${filtros.tipo === "Operativo" ? "activa" : ""}" id="mc-ope">
       <div class="m-lbl">Operativas</div>
       <div class="m-val" style="color:var(--amber)">${operativas.length}</div>
-      <div class="m-sub">clic para filtrar</div></div>
+      ${vs(operativas.length, l => l.filter(g => g.tipo === "Operativo").length) || `<div class="m-sub">clic para filtrar</div>`}</div>
     <div class="m-card"><div class="m-lbl">Cuentas visitadas</div>
       <div class="m-val">${cuentas.size}</div>
-      <div class="m-sub">cuentas únicas</div></div>
+      ${vs(cuentasN(visibles), cuentasN) || `<div class="m-sub">cuentas únicas</div>`}</div>
     <div class="m-card clic ${filtros.tipoCliente === "Nuevo" ? "activa" : ""}" id="mc-nue">
       <div class="m-lbl">Clientes nuevos</div>
       <div class="m-val" style="color:var(--purple)">${clientesNuevos}</div>
-      <div class="m-sub">clic para filtrar</div></div>
+      ${vs(clientesNuevos, l => l.filter(g => g.tipoCliente === "Nuevo").length) || `<div class="m-sub">clic para filtrar</div>`}</div>
   `;
   $("mc-todas").addEventListener("click", () => {
     filtros.tipo = ""; filtros.tipoCliente = ""; filtros.etapa = ""; filtros.rep = "";
-    filtros.canal = ""; filtros.modalidad = "";
-    $("ag-f-tipo").value = ""; $("ag-f-etapa").value = ""; $("ag-f-rep").value = "";
-    $("ag-f-canal").value = ""; $("ag-f-modalidad").value = "";
+    filtros.canal = ""; filtros.modalidad = ""; filtros.negocio = ""; filtros.sector = "";
+    ["ag-f-tipo","ag-f-etapa","ag-f-rep","ag-f-canal","ag-f-modalidad","ag-f-negocio","ag-f-sector"].forEach(id => $(id).value = "");
     renderMensual();
   });
   $("mc-com").addEventListener("click", () => {
@@ -1174,39 +1676,8 @@ function renderMensual() {
     }
   });
 
-  // ── Indicadores de composición (donas con % y clic para filtrar) ──
-  const donaMini = (canvasId, sumId, items, alClic) => {
-    const conDatos = items.filter(i => i.n > 0);
-    const labels = conDatos.map(i => i.label);
-    mkChart(canvasId, {
-      type: "doughnut",
-      data: { labels, datasets: [{ data: conDatos.map(i => i.n), backgroundColor: conDatos.map(i => i.color), borderWidth: 0 }] },
-      options: {
-        cutout: "62%", responsive: true, maintainAspectRatio: false,
-        onClick: (evt, elems) => { if (elems.length && alClic) alClic(labels[elems[0].index]); },
-        plugins: { legend: { position: "right", labels: { boxWidth: 10, font: { size: 11 } } } }
-      }
-    });
-    const tot = items.reduce((s, i) => s + i.n, 0) || 1;
-    const el = $(sumId);
-    if (el) el.innerHTML = items.map(i =>
-      `<b>${esc(i.label)}</b>: ${i.n} (${Math.round(i.n / tot * 100)}%)`).join(" &nbsp;·&nbsp; ");
-  };
-  donaMini("ag-ch-tipo", "sum-tipo", [
-    { label: "Comercial", n: comerciales.length, color: "#2563EB" },
-    { label: "Operativo", n: operativas.length, color: "#9b9b96" }
-  ], (l) => { filtros.tipo = filtros.tipo === l ? "" : l; $("ag-f-tipo").value = filtros.tipo; renderMensual(); });
-  const modPres = visibles.filter(g => g.modalidad === "Presencial").length;
-  const modVirt = visibles.filter(g => g.modalidad === "Virtual").length;
-  donaMini("ag-ch-mod", "sum-mod", [
-    { label: "Presencial", n: modPres, color: "#d97706" },
-    { label: "Virtual", n: modVirt, color: "#0d9488" }
-  ], (l) => { filtros.modalidad = filtros.modalidad === l ? "" : l; $("ag-f-modalidad").value = filtros.modalidad; renderMensual(); });
-  const cliExist = visibles.filter(g => g.tipoCliente === "Existente").length;
-  donaMini("ag-ch-cli", "sum-cli", [
-    { label: "Nuevo", n: clientesNuevos, color: "#7c3aed" },
-    { label: "Existente", n: cliExist, color: "#16a34a" }
-  ], (l) => { filtros.tipoCliente = filtros.tipoCliente === l ? "" : l; renderMensual(); });
+  // ── Composición 100%: cada fila es una dimensión, cada segmento una opción ──
+  renderComposicion(visibles);
 
   $("ag-conteo").textContent = `${visibles.length} gestión(es)` +
     (filtros.tipoCliente === "Nuevo" ? " · solo clientes nuevos" : "");
@@ -1230,66 +1701,159 @@ function renderMensual() {
 }
 
 // ═══════════════════════════════════════════
-// 📈 EVOLUCIÓN MENSUAL (todos los meses en gráficas)
+// 📈 HISTÓRICO (v5): comparativo de meses del año / año fiscal
 // ═══════════════════════════════════════════
-function renderEvolucion() {
-  if (!$("evo-ch")) return;
-  const meses = mesesEnDatos().slice().sort(); // cronológico
-  const base = baseGestiones();
-  const datos = meses.map(m => {
-    const del = base.filter(g => mesDe(g) === m);
-    return {
-      com: del.filter(g => g.tipo === "Comercial").length,
-      ope: del.filter(g => g.tipo === "Operativo").length,
-      nue: del.filter(g => g.tipoCliente === "Nuevo").length,
-      cta: new Set(del.map(g => String(g.cuenta || "").trim()).filter(Boolean)).size,
-      pre: del.filter(g => g.modalidad === "Presencial").length
-    };
-  });
-  const etiq = meses.map(m => {
-    const [a, mm] = m.split("-");
-    return MESES_NOMBRE[parseInt(mm) - 1].slice(0, 3) + " " + a.slice(2);
-  });
+// Año fiscal al que pertenece un mes "AAAA-MM". Con FY_INICIO_MES = 1
+// coincide con el año calendario; si no, el FY se nombra por el año en que termina.
+function fyDe(clave) {
+  const [a, m] = clave.split("-").map(Number);
+  if (FY_INICIO_MES === 1) return a;
+  return m >= FY_INICIO_MES ? a + 1 : a;
+}
+function mesesFY(fy) {
+  const inicio = `${FY_INICIO_MES === 1 ? fy : fy - 1}-${pad(FY_INICIO_MES)}`;
+  return Array.from({ length: 12 }, (_, i) => mesSumar(inicio, i));
+}
+function nombreFY(fy) { return FY_INICIO_MES === 1 ? `Año ${fy}` : `FY ${fy}`; }
+function mesCorto(clave) {
+  const [a, m] = clave.split("-");
+  return MESES_NOMBRE[parseInt(m) - 1].slice(0, 3) + " " + a.slice(2);
+}
+function calor(ratio, base) {
+  const r = Math.max(0, Math.min(1, ratio || 0));
+  return `background:rgba(${base},${(0.06 + r * 0.55).toFixed(2)});color:${r > 0.75 ? "#fff" : "var(--txt)"}`;
+}
 
+function renderHistorico() {
+  if (!$("his-kpis")) return;
+  const todas = baseGestiones().filter(g => !hisRep || g.rep === hisRep);
+  const hoyClave = claveMesHoy();
+  const fys = [...new Set(mesesEnDatos().map(fyDe))].sort((a, b) => b - a);
+  if (!fys.length) {
+    $("his-kpis").innerHTML = `<div class="lista-vacia">Aún no hay gestiones para construir el histórico.</div>`;
+    return;
+  }
+  if (!hisFY || !fys.includes(hisFY)) hisFY = fys.includes(fyDe(hoyClave)) ? fyDe(hoyClave) : fys[0];
+  $("his-fy").innerHTML = fys.map(f => `<option value="${f}" ${f === hisFY ? "selected" : ""}>${nombreFY(f)}</option>`).join("");
+  $("his-ind").value = hisInd;
+  const ind = INDICADORES[hisInd];
+
+  // Agrupa por mes
+  const porMes = {};
+  todas.forEach(g => { const m = mesDe(g); if (/^\d{4}-\d{2}$/.test(m)) (porMes[m] = porMes[m] || []).push(g); });
+  const lista = (m) => porMes[m] || [];
+  const val = (m, f = ind.f) => f(lista(m));
+
+  // Meses del FY con datos: desde el primer mes con gestiones hasta hoy
+  const delFY = mesesFY(hisFY);
+  const conDatos = delFY.filter(m => lista(m).length);
+  const primero = conDatos[0] || delFY[0];
+  const meses = delFY.filter(m => m >= primero && m <= hoyClave);
+  if (!meses.length) meses.push(primero);
+  if (!hisMes || !meses.includes(hisMes)) hisMes = meses.includes(hoyClave) ? hoyClave : meses[meses.length - 1];
+  $("his-mes").innerHTML = [...meses].reverse().map(m => `<option value="${m}" ${m === hisMes ? "selected" : ""}>${nombreMes(m)}</option>`).join("");
+
+  // Promedio de los meses CERRADOS (el mes en curso está incompleto)
+  const cerrados = meses.filter(m => m < hoyClave);
+  const prom = cerrados.length ? cerrados.reduce((s, m) => s + val(m), 0) / cerrados.length : 0;
+
+  // ── KPIs del mes seleccionado ──
+  const v = val(hisMes);
+  const mAnt = mesAnterior(hisMes);
+  const enCurso = hisMes === hoyClave;
+  const hoy = new Date();
+  // Mes en curso: se compara contra el mes anterior HASTA EL MISMO DÍA
+  const vAntCompleto = val(mAnt);
+  const vAnt = enCurso ? ind.f(hastaDia(lista(mAnt), hoy.getDate())) : vAntCompleto;
+  const diasMes = new Date(hoy.getFullYear(), hoy.getMonth() + 1, 0).getDate();
+  const proy = enCurso ? Math.round(v / hoy.getDate() * diasMes) : null;
+  const ranking = [...meses].filter(m => !(m === hoyClave)).sort((a, b) => val(b) - val(a));
+  const mejor = ranking[0];
+  const ytdMeses = meses.filter(m => m <= hisMes);
+  const ytd = ind.f(ytdMeses.flatMap(lista));
+  // Mismo mes del FY anterior (aparece solo cuando haya datos de ese año)
+  const mAA = mesSumar(hisMes, -12);
+  const hayAA = lista(mAA).length > 0;
+  const ytdAA = hayAA ? ind.f(ytdMeses.map(m => mesSumar(m, -12)).flatMap(lista)) : 0;
+
+  const kpi = (l, vv, sub, cls = "") => `<div class="his-kpi ${cls}"><div class="l">${l}</div><div class="v">${vv}</div><div class="s">${sub}</div></div>`;
+  const quien = hisRep ? esc(hisRep.split(" ")[0]) : (esAdmin() ? "equipo" : "tú");
+  $("his-kpis").innerHTML = [
+    kpi(`${ind.t} · ${nombreMes(hisMes)}`, v, enCurso ? `mes en curso · día ${hoy.getDate()} de ${diasMes} · ${quien}` : quien, "main"),
+    kpi(`vs ${nombreMes(mAnt)}${enCurso ? " al día " + hoy.getDate() : ""}`, deltaTxt(v, vAnt),
+      enCurso ? `${vAnt} al ${hoy.getDate()} de ${MESES_NOMBRE[parseInt(mAnt.slice(5)) - 1].toLowerCase()} · mes completo: ${vAntCompleto}` : `${vAnt} el mes anterior`),
+    enCurso
+      ? kpi(`Proyección al cierre vs promedio`, `${proy} ${cerrados.length ? deltaTxt(proy, Math.round(prom * 10) / 10) : ""}`, cerrados.length ? `si se mantiene el ritmo · promedio ${prom.toFixed(1)} / mes` : "si se mantiene el ritmo actual")
+      : kpi(`vs promedio ${nombreFY(hisFY)}`, cerrados.length ? deltaTxt(v, Math.round(prom * 10) / 10) : "—", cerrados.length ? `promedio ${prom.toFixed(1)} / mes (${cerrados.length} meses cerrados)` : "sin meses cerrados aún"),
+    mejor ? kpi(`Mejor mes · ${nombreFY(hisFY)}`, `${val(mejor)}`, `${nombreMes(mejor)}${mejor === hisMes ? " · ¡es este mes! 🏆" : ""}`) : "",
+    kpi(`Acumulado ${nombreFY(hisFY)} a ${MESES_NOMBRE[parseInt(hisMes.slice(5)) - 1].toLowerCase()}`, ytd, hayAA ? `${deltaTxt(ytd, ytdAA)} vs mismo periodo año anterior (${ytdAA})` : `${ytdMeses.length} mes(es)`),
+    hayAA ? kpi(`vs ${nombreMes(mAA)}`, deltaTxt(v, val(mAA)), `${val(mAA)} en el mismo mes del año anterior`) : ""
+  ].join("");
+
+  // ── Gráfica mes a mes ──
+  $("his-ch-tit").textContent = `${ind.t} — mes a mes · ${nombreFY(hisFY)}${hisRep ? " · " + hisRep : ""}`;
+  const etiq = delFY.map(mesCorto);
+  const datos = delFY.map(m => (m >= primero && m <= hoyClave) ? val(m) : null);
+  const colores = delFY.map(m => m === hisMes ? "#2563EB" : (m === hoyClave ? "rgba(37,99,235,.25)" : "#93c5fd"));
+  const hayFYAnt = delFY.some(m => lista(mesSumar(m, -12)).length);
+  const datasets = [
+    { type: "bar", label: ind.t, data: datos, backgroundColor: colores, borderRadius: 5, order: 2,
+      borderColor: delFY.map(m => m === hoyClave ? "#2563EB" : "transparent"), borderWidth: delFY.map(m => m === hoyClave ? 1.5 : 0) },
+    { type: "line", label: "Promedio meses cerrados", data: delFY.map(() => cerrados.length ? Math.round(prom * 10) / 10 : null),
+      borderColor: "#6b6b67", borderDash: [6, 4], borderWidth: 1.5, pointRadius: 0, order: 1 }
+  ];
+  if (hayFYAnt) datasets.push({ type: "line", label: nombreFY(hisFY - 1), data: delFY.map(m => val(mesSumar(m, -12))),
+    borderColor: "#d97706", backgroundColor: "#d97706", borderWidth: 2, pointRadius: 3, tension: 0.3, order: 0 });
   mkChart("evo-ch", {
-    data: {
-      labels: etiq,
-      datasets: [
-        { type: "bar", label: "Comerciales", data: datos.map(d => d.com), backgroundColor: "#2563EB", stack: "g", borderRadius: 4 },
-        { type: "bar", label: "Operativas", data: datos.map(d => d.ope), backgroundColor: "#9b9b96", stack: "g", borderRadius: 4 },
-        { type: "line", label: "Clientes nuevos", data: datos.map(d => d.nue), borderColor: "#d97706", backgroundColor: "#d97706", stack: "linea", tension: 0.3, pointRadius: 3 }
-      ]
-    },
+    data: { labels: etiq, datasets },
     options: {
       responsive: true, maintainAspectRatio: false,
       onClick: (evt, elems) => {
         if (!elems.length) return;
-        const m = meses[elems[0].index];
-        filtros.mes = m;
-        $("ag-f-mes").value = m;
-        renderMensual();
-        mostrarSub("mes");
+        const m = delFY[elems[0].index];
+        if (m >= primero && m <= hoyClave) { hisMes = m; renderHistorico(); }
       },
-      plugins: { legend: { position: "top", labels: { boxWidth: 10, font: { size: 11 } } } },
-      scales: { x: { stacked: true, grid: { display: false } }, y: { stacked: true, ticks: { precision: 0 } } }
+      plugins: {
+        legend: { position: "top", labels: { boxWidth: 10, font: { size: 11 } } },
+        tooltip: { callbacks: { afterLabel: (it) => it.datasetIndex === 0 && delFY[it.dataIndex] === hoyClave ? "(mes en curso)" : "" } }
+      },
+      scales: { x: { grid: { display: false } }, y: { beginAtZero: true, ticks: { precision: 0 } } }
     }
   });
 
-  mkChart("evo-ch2", {
-    type: "line",
-    data: {
-      labels: etiq,
-      datasets: [
-        { label: "Cuentas únicas", data: datos.map(d => d.cta), borderColor: "#7c3aed", backgroundColor: "#7c3aed", tension: 0.3, pointRadius: 3 },
-        { label: "Presenciales", data: datos.map(d => d.pre), borderColor: "#0d9488", backgroundColor: "#0d9488", tension: 0.3, pointRadius: 3 }
-      ]
-    },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { position: "top", labels: { boxWidth: 10, font: { size: 11 } } } },
-      scales: { x: { grid: { display: false } }, y: { ticks: { precision: 0 } } }
-    }
-  });
+  // ── Tabla: todos los indicadores mes a mes (mapa de calor por fila) ──
+  const th = meses.map(m => `<th class="mes ${m === hisMes ? "sel" : ""}" data-mes="${m}" title="Analizar ${nombreMes(m)}">${mesCorto(m)}${m === hoyClave ? " ⏳" : ""}</th>`).join("");
+  const filas = Object.entries(INDICADORES).map(([k, it]) => {
+    const vals = meses.map(m => it.f(lista(m)));
+    const max = Math.max(1, ...vals);
+    const celdas = vals.map((x, i) => {
+      const sub = i > 0 ? `<small>${deltaTxt(x, vals[i - 1])}</small>` : `<small>&nbsp;</small>`;
+      return `<td class="${meses[i] === hisMes ? "sel" : ""}" style="${calor(x / max, "37,99,235")}">${x}${sub}</td>`;
+    }).join("");
+    const cer = meses.filter(m => m < hoyClave);
+    const pr = cer.length ? cer.reduce((s, m) => s + it.f(lista(m)), 0) / cer.length : 0;
+    return `<tr class="${k === hisInd ? "on" : ""}"><td class="lbl" data-ind="${k}">${it.t}</td>${celdas}
+      <td class="tot">${it.f(meses.flatMap(lista))}</td><td class="tot">${cer.length ? pr.toFixed(1) : "—"}</td></tr>`;
+  }).join("");
+  $("his-tabla").innerHTML = `<tr><th></th>${th}<th>Total</th><th>Prom.*</th></tr>${filas}
+    <tr><td colspan="${meses.length + 3}" class="hint" style="text-align:left;padding-top:8px">* Promedio de los meses cerrados. ⏳ = mes en curso (parcial). “Cuentas únicas” del total no es la suma: cuenta cada cliente una vez en el año.</td></tr>`;
+  $("his-tabla").querySelectorAll("th.mes").forEach(el => el.addEventListener("click", () => { hisMes = el.dataset.mes; renderHistorico(); }));
+  $("his-tabla").querySelectorAll("td.lbl").forEach(el => el.addEventListener("click", () => { hisInd = el.dataset.ind; renderHistorico(); }));
+
+  // ── Rep × mes (solo Gerencia) ──
+  const repCard = $("his-rep-card");
+  if (!esAdmin()) { repCard.style.display = "none"; return; }
+  repCard.style.display = "block";
+  $("his-rep-tit").textContent = `${ind.t} por rep, mes a mes · ${nombreFY(hisFY)}`;
+  const base = baseGestiones();
+  const reps = repsVisibles();
+  const matriz = reps.map(r => meses.map(m => ind.f(base.filter(g => g.rep === r && mesDe(g) === m))));
+  const maxR = Math.max(1, ...matriz.flat());
+  $("his-rep-tabla").innerHTML = `<tr><th></th>${th}<th>Total</th></tr>` + reps.map((r, i) => `<tr>
+      <td class="lbl" style="cursor:default">${esc(r.split(" ")[0])}</td>
+      ${matriz[i].map((x, j) => `<td class="${meses[j] === hisMes ? "sel" : ""}" style="${calor(x / maxR, "124,58,237")}">${x}</td>`).join("")}
+      <td class="tot">${ind.f(base.filter(g => g.rep === r && meses.includes(mesDe(g))))}</td></tr>`).join("");
+  $("his-rep-tabla").querySelectorAll("th.mes").forEach(el => el.addEventListener("click", () => { hisMes = el.dataset.mes; renderHistorico(); }));
 }
 
 // ═══════════════════════════════════════════
@@ -1297,15 +1861,9 @@ function renderEvolucion() {
 // ═══════════════════════════════════════════
 function statsMes(clave) {
   const del = baseGestiones().filter(g => mesDe(g) === clave);
-  return {
-    total: del.length,
-    comerciales: del.filter(g => g.tipo === "Comercial").length,
-    operativas: del.filter(g => g.tipo === "Operativo").length,
-    cuentas: new Set(del.map(g => String(g.cuenta || "").trim()).filter(Boolean)).size,
-    nuevos: del.filter(g => g.tipoCliente === "Nuevo").length,
-    presenciales: del.filter(g => g.modalidad === "Presencial").length,
-    porRep: del.reduce((acc, g) => { const r = g.rep || "Sin rep"; acc[r] = (acc[r] || 0) + 1; return acc; }, {})
-  };
+  const st = { porRep: del.reduce((acc, g) => { const r = g.rep || "Sin rep"; acc[r] = (acc[r] || 0) + 1; return acc; }, {}) };
+  Object.entries(INDICADORES).forEach(([k, it]) => st[k] = it.f(del));
+  return st;
 }
 
 function deltaHtml(a, b) {
@@ -1328,12 +1886,7 @@ function renderComparar() {
     <tr><td>${nombre}</td><td><b>${a}</b></td><td><b>${b}</b></td><td>${deltaHtml(a, b)}</td></tr>`;
   $("cmp-tabla").innerHTML = `
     <tr><th></th><th>${nombreMes(cmpA)}</th><th>${nombreMes(cmpB)}</th><th>Variación</th></tr>
-    ${fila("Gestiones totales", A.total, B.total)}
-    ${fila("Comerciales", A.comerciales, B.comerciales)}
-    ${fila("Operativas", A.operativas, B.operativas)}
-    ${fila("Cuentas únicas", A.cuentas, B.cuentas)}
-    ${fila("Clientes nuevos", A.nuevos, B.nuevos)}
-    ${fila("Presenciales", A.presenciales, B.presenciales)}
+    ${Object.entries(INDICADORES).map(([k, it]) => fila(it.t, A[k], B[k])).join("")}
   `;
 
   const reps = [...new Set([...Object.keys(A.porRep), ...Object.keys(B.porRep)])].sort();
@@ -1362,15 +1915,28 @@ function abrirModal(g) {
   $("ag-modal-titulo").textContent = g ? "Editar gestión" : "Registrar gestión";
   $("ag-modal-error").textContent = "";
   if (esAdmin()) $("ag-c-rep").value = g?.rep || "";
-  $("ag-c-ciudad").value = g?.ciudad || "";
+  $("ag-c-ciudad").value = CIUDAD_FIJA;
   const hoy = new Date();
   $("ag-c-fecha").value = g?.fecha || claveFecha(hoy);
   $("ag-c-hora").value = g?.hora || `${pad(hoy.getHours())}:${pad(hoy.getMinutes())}`;
   $("ag-c-cuenta").value = g?.cuenta || "";
   $("ag-c-oportunidad").value = g?.oportunidad || "";
-  $("ag-c-tipoCliente").value = g?.tipoCliente || "";
-  $("ag-c-canal").value = g?.canal || "";
+  $("ag-c-canal").value = normSeg(g?.canal);
+  $("ag-c-sector").value = normSector(g?.sector);
+  $("ag-c-negocio").value = NEGOCIOS.includes(g?.negocio) ? g.negocio : "";
   $("ag-c-modalidad").value = g?.modalidad || "";
+  // Cuenta: al editar siempre es una cuenta existente
+  cuentaOriginal = g?.cuenta || "";
+  tipoClienteOriginal = g?.tipoCliente || "";
+  histLimite = 8;
+  modoCuenta = "existente";
+  $("ag-cta-modo-ex").classList.add("on");
+  $("ag-cta-modo-nu").classList.remove("on");
+  $("ag-c-cuenta").setAttribute("list", "ag-dl-cuenta");
+  $("ag-c-cuenta").placeholder = "Escribe para buscar la cuenta…";
+  alCambiarCuenta();
+  if (g?.contactoNombre) poblarContactos(infoCuenta(g.cuenta), g.contactoNombre);
+  else if (g) { $("ag-c-contacto").value = ""; alCambiarContacto(); }
   $("ag-c-tipo").value = g?.tipo || "";
   const esComercial = (g?.tipo === "Comercial");
   $("ag-etapa-wrap").style.display = esComercial ? "flex" : "none";
@@ -1398,8 +1964,8 @@ export function abrirGestionDesdeSprint(datos) {
   if (!$("ag-modal")) return;
   abrirModal(null);
   $("ag-c-cuenta").value = datos.cuenta || "";
+  alCambiarCuenta();
   $("ag-c-oportunidad").value = datos.oportunidad || "Recontacto base instalada";
-  $("ag-c-tipoCliente").value = "Existente";
   $("ag-c-tipo").value = "Comercial";
   $("ag-c-tipo").dispatchEvent(new Event("change"));
   $("ag-c-etapa").value = "Seguimiento";
@@ -1433,19 +1999,44 @@ async function guardar() {
   const u = obtenerUsuario();
 
   const rep = esAdmin() ? $("ag-c-rep").value : u.nombreRep;
-  const ciudad = $("ag-c-ciudad").value.trim();
+  const ciudad = CIUDAD_FIJA;
   const fecha = $("ag-c-fecha").value;
-  const cuenta = $("ag-c-cuenta").value.trim();
+  const escrita = $("ag-c-cuenta").value.trim();
+  const info = infoCuenta(escrita);
   const oportunidad = $("ag-c-oportunidad").value.trim();
-  const tipoCliente = $("ag-c-tipoCliente").value;
-  const canal = $("ag-c-canal").value;
+  const negocio = $("ag-c-negocio").value;
   const modalidad = $("ag-c-modalidad").value;
   const tipo = $("ag-c-tipo").value;
   const etapa = $("ag-c-etapa").value;
   const sprintAccion = $("ag-c-sprint").value;
 
-  if (!rep || !ciudad || !fecha || !cuenta || !oportunidad || !tipoCliente || !canal || !modalidad || !tipo) {
+  // ── Cuenta: existente o nueva ──
+  if (!escrita) { err.textContent = "Elige la cuenta o registra una nueva."; return; }
+  if (modoCuenta === "existente" && !info) {
+    err.textContent = "Esa cuenta no existe todavía. Elígela de la lista o usa “✨ Registrar nueva”.";
+    return;
+  }
+  if (modoCuenta === "nueva" && info) {
+    err.textContent = `“${info.nombre}” ya existe: usa la cuenta existente.`;
+    return;
+  }
+  const cuenta = info ? info.nombre : escrita;
+  const canal = (info && info.canal) || $("ag-c-canal").value;
+  const sector = (info && info.sector) || $("ag-c-sector").value;
+  // Tipo de cliente automático: cuenta nueva → Nuevo; existente → Existente.
+  // Al editar sin cambiar de cuenta se respeta lo que ya tenía.
+  const tipoCliente = (editandoId && tipoClienteOriginal && idCuenta(cuentaOriginal) === idCuenta(cuenta))
+    ? tipoClienteOriginal
+    : (modoCuenta === "nueva" ? "Nuevo" : "Existente");
+  const ct = leerContacto();
+  if (ct.error) { err.textContent = ct.error; return; }
+
+  if (!rep || !fecha || !oportunidad || !negocio || !modalidad || !tipo) {
     err.textContent = "Completa todos los campos obligatorios (*).";
+    return;
+  }
+  if (!canal || !sector) {
+    err.textContent = "Indica el canal y el sector (público o privado) de la cuenta.";
     return;
   }
   if (tipo === "Comercial" && !etapa) {
@@ -1475,7 +2066,7 @@ async function guardar() {
         oportunidad, cuenta, rep, estado, valor,
         prob: pe.prob, esperado: pe.esperado,
         anio_radicacion: isNaN(anioGestion) ? new Date().getFullYear() : anioGestion,
-        canal: "", origen: "Agenda Comercial", comentarios: "Creada desde una gestión de la agenda"
+        canal: "", segmento: canal, origen: "Agenda Comercial", comentarios: "Creada desde una gestión de la agenda"
       });
       if (!resDeal.ok) {
         err.textContent = "No se pudo crear la oportunidad: " + resDeal.error;
@@ -1513,9 +2104,41 @@ async function guardar() {
       dealId = vinculo;
     }
 
+    // ── Ficha de la cuenta (canal, sector, contactos) ──
+    // Si falla (p. ej. reglas sin publicar) la gestión se guarda igual:
+    // canal, sector y contacto también quedan copiados en la gestión.
+    const cuentaId = (info && info.fichaId) || idCuenta(cuenta);
+    let avisoFicha = "";
+    const hoyIso = claveFecha(new Date());
+    const nuevoCt = ct.esNuevo ? { ...ct.contacto, creadoPor: rep, fecha: hoyIso } : null;
+    if (!info || !info.fichaId) {
+      const rf = await crearCuenta(cuentaId, {
+        nombre: cuenta, canal, sector, contactos: nuevoCt ? [nuevoCt] : [],
+        creadoPor: rep, origen: modoCuenta === "nueva" ? "Agenda · cuenta nueva" : "Agenda · cuenta histórica"
+      });
+      if (!rf.ok) avisoFicha = rf.error;
+    } else {
+      const cambios = {};
+      if (!fichas.find(f => f.id === info.fichaId)?.canal) cambios.canal = canal;
+      if (!fichas.find(f => f.id === info.fichaId)?.sector) cambios.sector = sector;
+      if (Object.keys(cambios).length) {
+        const rf = await actualizarCuenta(info.fichaId, cambios);
+        if (!rf.ok) avisoFicha = rf.error;
+      }
+      if (nuevoCt) {
+        const rc = await agregarContactoCuenta(info.fichaId, nuevoCt);
+        if (!rc.ok) avisoFicha = rc.error;
+      }
+    }
+    if (avisoFicha) console.warn("No se actualizó la ficha de la cuenta:", avisoFicha);
+
     // ── Guardar la gestión (con la referencia a la oportunidad) ──
+    const c = ct.contacto || {};
     const datos = {
       rep, ciudad, fecha, cuenta, oportunidad, tipoCliente, canal, modalidad, tipo,
+      negocio, sector, cuentaId,
+      contactoNombre: c.nombre || "", contactoCargo: c.cargo || "",
+      contactoCorreo: c.correo || "", contactoTelefono: c.telefono || "",
       hora: $("ag-c-hora").value,
       etapa: tipo === "Comercial" ? etapa : "",
       etapaVenta: tipo === "Comercial" ? etapa : "",
@@ -1534,6 +2157,7 @@ async function guardar() {
       toast(vinculo === "__nueva__" ? "✓ Gestión guardada · oportunidad creada en el pipeline"
         : vinculo ? "✓ Gestión guardada · oportunidad del pipeline actualizada"
         : (eraEdicion ? "✓ Gestión actualizada" : "✓ Gestión registrada"));
+      if (avisoFicha) setTimeout(() => toast("⚠️ La gestión se guardó, pero no se pudo actualizar la ficha de la cuenta"), 3000);
     }
     else err.textContent = res.error;
   } catch (e) {
