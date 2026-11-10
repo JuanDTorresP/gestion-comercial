@@ -8,7 +8,8 @@
 //   deals     → oportunidades del Pipeline 2026
 //   gestiones → registros de la Agenda Comercial
 //   cuentasSprint → cuentas de base instalada a recontactar (Sprint)
-//   cuentas   → ficha única por cliente (canal, sector, contactos) — nov 2026
+//   cuentas   → ficha única por cliente (segmento, contactos) — nov 2026
+//   brokers   → catálogo de brokers (canal Indirecto) — nov 2026
 //
 // Todas las funciones de escritura devuelven { ok, error }.
 // Las suscripciones entregan los datos EN VIVO: cada vez que
@@ -17,6 +18,7 @@
 // ═══════════════════════════════════════════════════════════
 
 import { db } from "./firebase-config.js";
+import { claveCuenta } from "./catalogos.js";
 import {
   collection,
   doc,
@@ -260,11 +262,9 @@ export async function importarCuentasSprint(items) {
 // contactos y completar canal/sector si estaban vacíos.
 // ───────────────────────────────────────────────
 
-// "Constructora Bolívar S.A." → "constructora-bolivar-s-a"
-export function idCuenta(nombre) {
-  return String(nombre || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 120) || "sin-nombre";
-}
+// Llave única de la cuenta (ver catalogos.js): "Laboratorios Provet S.A.S."
+// y "LABORATORIOS PROVET SA" dan la misma: "laboratorios-provet".
+export function idCuenta(nombre) { return claveCuenta(nombre); }
 
 export function suscribirCuentas(callback, onError) {
   return onSnapshot(collection(db, "cuentas"), (snap) => {
@@ -312,6 +312,75 @@ export async function agregarContactoCuenta(id, contacto) {
     return { ok: true };
   } catch (error) {
     console.error("Error agregando contacto:", error);
+    return { ok: false, error: traducirErrorFirestore(error) };
+  }
+}
+
+// ───────────────────────────────────────────────
+// BROKERS (colección: brokers) — nov 2026
+// { nombre, empresa, contacto, correo, telefono, notas, creadoPor }
+// Reglas: todos leen; cualquiera crea a su nombre; solo Gerencia edita y borra.
+// ───────────────────────────────────────────────
+export function suscribirBrokers(callback, onError) {
+  return onSnapshot(collection(db, "brokers"), (snap) => {
+    callback(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+  }, (error) => {
+    console.error("Error escuchando brokers:", error);
+    if (onError) onError(error);
+  });
+}
+export async function crearBroker(datos) {
+  try {
+    const id = claveCuenta(datos.nombre);
+    await setDoc(doc(db, "brokers", id), { ...datos, creadoEn: serverTimestamp(), actualizadoEn: serverTimestamp() });
+    return { ok: true, id };
+  } catch (error) {
+    console.error("Error creando broker:", error);
+    return { ok: false, error: traducirErrorFirestore(error) };
+  }
+}
+export async function actualizarBroker(id, datos) {
+  try {
+    await updateDoc(doc(db, "brokers", id), { ...datos, actualizadoEn: serverTimestamp() });
+    return { ok: true };
+  } catch (error) {
+    console.error("Error actualizando broker:", error);
+    return { ok: false, error: traducirErrorFirestore(error) };
+  }
+}
+export async function eliminarBroker(id) {
+  try {
+    await deleteDoc(doc(db, "brokers", id));
+    return { ok: true };
+  } catch (error) {
+    console.error("Error eliminando broker:", error);
+    return { ok: false, error: traducirErrorFirestore(error) };
+  }
+}
+
+// ───────────────────────────────────────────────
+// CALIDAD DE DATOS (solo Gerencia) — nov 2026
+// Aplica muchos cambios en lotes de 400.
+//   cambios = [{ col: "deals"|"gestiones"|"cuentasSprint"|"cuentas"|"brokers",
+//                id, datos }]            → update (datos = campos a cambiar)
+//              { col, id, borrar: true } → delete
+//              { col, id, crear: datos } → set con merge
+// ───────────────────────────────────────────────
+export async function aplicarCambiosLote(cambios) {
+  try {
+    for (let i = 0; i < cambios.length; i += 400) {
+      const batch = writeBatch(db);
+      for (const c of cambios.slice(i, i + 400)) {
+        const ref = doc(db, c.col, c.id);
+        if (c.borrar) batch.delete(ref);
+        else if (c.crear) batch.set(ref, { ...c.crear, actualizadoEn: serverTimestamp() }, { merge: true });
+        else batch.update(ref, { ...c.datos, actualizadoEn: serverTimestamp() });
+      }
+      await batch.commit();
+    }
+    return { ok: true };
+  } catch (error) {
+    console.error("Error aplicando cambios en lote:", error);
     return { ok: false, error: traducirErrorFirestore(error) };
   }
 }

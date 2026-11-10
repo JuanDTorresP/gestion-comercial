@@ -29,7 +29,8 @@ import { esAdmin, obtenerUsuario } from "./auth-service.js";
 import { suscribirCuentasSprint, actualizarCuentaSprint, importarCuentasSprint,
   reasignarCuentasSprint, eliminarCuentasSprint, crearDeal } from "./firestore-service.js";
 import { REPS_SPRINT, PASOS_RUTA } from "./sprint-config.js";
-import { agruparRuta, estadoRuta as calcRuta, pasosHtml } from "./sprint-ruta.js";
+import { agruparRuta, estadoRuta as calcRuta, pasosHtml, normCuenta } from "./sprint-ruta.js";
+import { cuentaDe } from "./cuentas-store.js";
 
 export const RESULTADOS = ["Sin respuesta", "Contactado", "Interesado", "Chequeo agendado", "Cotización solicitada",
   "No interesado", "Dato errado", "Ya no existe"];
@@ -234,7 +235,7 @@ export function detenerCuentas() {
 
 // Nombres (normalizados) de las cuentas de la base instalada; sprint-view.js
 // los usa para no repetirlas en la tabla "Otras cuentas en ruta".
-export function nombresCuentasBase() { return new Set(cuentas.map(c => norm(c.cuenta))); }
+export function nombresCuentasBase() { return new Set(cuentas.map(c => normCuenta(c.cuenta))); }
 
 // sprint-view.js llama esto cada vez que cambian gestiones o el filtro de rep.
 export function actualizarContextoCuentas(gestiones, filtroRep) {
@@ -265,7 +266,7 @@ function render() {
   pintarBulk();
   const av = avancePorCuenta();
   const base = cuentas.filter(c => !ctx.filtroRep || c.rep === ctx.filtroRep)
-    .map(c => ({ c, r: estadoRuta(c, av.get(norm(c.cuenta))) }));
+    .map(c => ({ c, r: estadoRuta(c, av.get(normCuenta(c.cuenta))) }));
 
   // Tarjetas
   const n = (fn) => base.filter(fn).length;
@@ -341,7 +342,7 @@ function render() {
 
   tb.querySelectorAll("[data-paso]").forEach(b => b.addEventListener("click", () => {
     const c = cuentas.find(x => x.id === b.dataset.paso); if (!c) return;
-    const r = estadoRuta(c, avancePorCuenta().get(norm(c.cuenta)));
+    const r = estadoRuta(c, avancePorCuenta().get(normCuenta(c.cuenta)));
     document.dispatchEvent(new CustomEvent("sprint:registrar-paso", {
       detail: { cuenta: c.cuenta, rep: c.rep, paso: PASOS_RUTA[r.idx], oportunidad: "Recontacto base instalada" }
     }));
@@ -492,7 +493,8 @@ async function guardar() {
       oportunidad: datos.proyectoDetalle, cuenta: editando.cuenta, rep: editando.rep, estado: "Identificado",
       valor, prob, esperado: Math.round(valor * prob),
       mes_radicacion: MESES[mes - 1] || "", anio_radicacion: anio || new Date().getFullYear(),
-      tipo: "", canal: "Corporativo", origen: "Sprint · Base instalada", riesgo: "", segmento: "", broker: "",
+      cuentaId: normCuenta(editando.cuenta),
+      tipo: "", canal: "Directo", origen: "CRM", riesgo: "", segmento: cuentaDe(editando.cuenta)?.segmento || "", broker: "",
       mes_inicio: "", motivo_perdida: "", comentarios: "Creada desde la calificación de la base instalada (Sprint de Tracción)"
     });
     if (!rd.ok) { btn.disabled = false; btn.textContent = "💾 Guardar"; $("bi-m-error").textContent = "No se pudo crear la oportunidad: " + rd.error; return; }

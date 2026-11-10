@@ -226,7 +226,7 @@ function medir(lista) {
   const de = (acc) => lista.filter(g => g.sprintAccion === acc);
   const ruta = de("ruta");
   const dec = ruta.filter(g => g.sprintDecisor);
-  const cuentas = (arr) => new Set(arr.map(g => norm(g.cuenta)).filter(Boolean)).size;
+  const cuentas = (arr) => new Set(arr.filter(g => String(g.cuenta || "").trim()).map(g => normCuenta(g.cuenta))).size;
   const par = (arr) => ({ tot: arr.length, sem: arr.filter(enSem).length });
   return {
     w,

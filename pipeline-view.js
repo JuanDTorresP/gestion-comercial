@@ -1,5 +1,16 @@
 // ═══════════════════════════════════════════════════════════
-// pipeline-view.js — v4.3
+// pipeline-view.js — v5.0
+// Cambios v5.0 (nov 2026) · datos precisos:
+//  · Cuentas: una sola por cliente aunque esté escrita distinto
+//    ("Provet SAS" = "PROVET S.A."): se agrupan con claveCuenta().
+//  · Formulario con LISTAS CERRADAS (catalogos.js):
+//      Cuenta → solo de la base (o "＋ Crear cuenta" con aviso de duplicados)
+//      Tipo → Venta / Renta · Canal → Directo / Indirecto
+//      Origen → Directo: Referido, Rep, Gerencia, CRM · Indirecto: Broker
+//      Broker → del catálogo de brokers (o "＋ Crear broker")
+//      Segmento → Retail / Corporativo / Público (sale de la cuenta)
+//  · Carga masiva: cuentas validadas y tipo/canal/origen comunes.
+//  · Nueva sub-pestaña 🤝 Brokers y herramienta 🧹 Calidad de datos (Gerencia).
 // Cambios v4.3 (nov 2026):
 //  · Pestaña 🏢 Cuentas: clic en una cuenta abre la 📇 FICHA 360
 //    (cuenta-ficha.js): datos, contactos, ganado/perdido/activo,
@@ -36,6 +47,14 @@
 import { obtenerUsuario, esAdmin } from "./auth-service.js";
 import { suscribirDeals, crearDeal, actualizarDeal, eliminarDeal, suscribirCuotas, guardarCuotas } from "./firestore-service.js";
 import { abrirFichaCuenta, alCambiarCuentas, nombresCuentas, actividadCuenta, detenerFichaCuenta } from "./cuenta-ficha.js";
+import { crearCuenta, actualizarCuenta, crearBroker } from "./firestore-service.js";
+import {
+  CANALES, ORIGENES_DIRECTO, ORIGEN_INDIRECTO, ORIGENES, SEGMENTOS, SEGMENTO_TXT,
+  claveCuenta, parecidoCuentas, normSegmento, canalDeDeal, origenDeDeal
+} from "./catalogos.js";
+import { alCambiarCatalogo, cuentaDe, nombreOficial, listaCuentas, brokers as listaBrokers, brokerDe, detenerCatalogo } from "./cuentas-store.js";
+import { pintarBrokers } from "./brokers-view.js";
+import { abrirCalidadDatos } from "./calidad-datos.js";
 
 // ═══════════════════════════════════════════
 // ⚙️ CUOTAS — ahora se administran DESDE EL CRM
@@ -91,6 +110,11 @@ const RIESGO_STYLE = {
 let deals = [];
 let parar = null;
 let pararCuotas = null;
+let pararCat = null;
+// Cuenta / broker recién creados desde el formulario (mientras llega el
+// snapshot de Firestore, se usan estos datos para no frenar al usuario)
+let cuentaNueva = null, brokerNuevo = null;
+let confirmarParecida = false, confirmarBrokerParecido = false;
 let editandoId = null;
 let ordenCampo = "valor", ordenDir = -1;
 let charts = {};
@@ -174,15 +198,18 @@ function tipoDe(d) {
   if (t === "renta" || t === "alquiler" || t === "arriendo") return "Renta";
   return "";
 }
-// Clasifica la oportunidad como Retail o Corporativo leyendo
-// TANTO el campo canal como el campo segmento (el histórico
-// guarda este dato en cualquiera de los dos, con mayúsculas variadas).
+// Segmento (Retail / Corporativo / Público): el de la oportunidad; si no
+// lo tiene, el que viene en el campo canal (histórico) o el de la cuenta.
 function segmentoDe(d) {
-  const c = String(d.canal || "").trim().toLowerCase();
-  const s = String(d.segmento || "").trim().toLowerCase();
-  if (c === "retail" || s === "retail") return "Retail";
-  if (c === "corporativo" || s === "corporativo") return "Corporativo";
-  return "";
+  return normSegmento(d.segmento) || normSegmento(d.canal) || (cuentaDe(d.cuenta)?.segmento || "");
+}
+// Canal (Directo / Indirecto) y Origen normalizados (catalogos.js)
+function canalDe(d) { return canalDeDeal(d); }
+function origenDe(d) { return origenDeDeal(d); }
+// Nombre del broker como está en el catálogo (o el escrito, si aún no existe)
+function brokerNom(d) {
+  const b = String(d.broker || "").trim();
+  return b ? (brokerDe(b)?.nombre || b) : "";
 }
 function anioDe(d) {
   // Extrae el año sin importar el formato: 2026, "2026", "2026 ", "2.026"...
@@ -233,6 +260,13 @@ export function iniciarPipeline() {
         `<div class="estado-conexion error">✕ No se pudo conectar al Pipeline. Revisa tu conexión o tus permisos.</div>`;
     }
   );
+  // Catálogo de cuentas y brokers (listas del formulario y nombres oficiales)
+  if (pararCat) pararCat();
+  pararCat = alCambiarCatalogo(() => {
+    llenarListasForm();
+    if ($("pl-modal")?.classList.contains("open")) alCambiarCuentaPl();
+    render();
+  });
   // Cuotas en vivo desde Firestore (si aún no existen, quedan los valores por defecto)
   if (pararCuotas) pararCuotas();
   pararCuotas = suscribirCuotas((cfg) => {
@@ -260,6 +294,8 @@ function actualizarTitulosAnio() {
 
 export function detenerPipeline() {
   detenerFichaCuenta();
+  if (pararCat) { pararCat(); pararCat = null; }
+  detenerCatalogo();
   if (parar) { parar(); parar = null; }
   if (pararCuotas) { pararCuotas(); pararCuotas = null; }
   Object.keys(charts).forEach(k => { charts[k].destroy(); delete charts[k]; });
@@ -278,19 +314,18 @@ const MS_DEFS = [
       return ops;
     } },
   { id: "ms-canal",  clave: "canal",  etiqueta: "Canal",    opciones: () => {
-      const ops = valoresUnicos("canal");
-      if (baseDeals().some(d => !String(d.canal || "").trim())) ops.push("Sin canal");
+      const ops = CANALES.slice();
+      if (baseDeals().some(d => !canalDe(d))) ops.push("Sin canal");
       return ops;
     } },
   { id: "ms-seg",    clave: "segmento", etiqueta: "Segmento", opciones: () => {
-      const s = new Set(baseDeals().map(segmentoDe));
-      const ops = [...s].filter(Boolean).sort();
-      if (s.has("")) ops.push("Sin segmento");
+      const ops = SEGMENTOS.slice();
+      if (baseDeals().some(d => !segmentoDe(d))) ops.push("Sin segmento");
       return ops;
     } },
   { id: "ms-origen", clave: "origen", etiqueta: "Origen",   opciones: () => {
-      const ops = valoresUnicos("origen");
-      if (baseDeals().some(d => !String(d.origen || "").trim())) ops.push("Sin origen");
+      const ops = ORIGENES.slice();
+      if (baseDeals().some(d => !origenDe(d))) ops.push("Sin origen");
       return ops;
     } },
   { id: "ms-riesgo", clave: "riesgo", etiqueta: "Riesgo",   opciones: () => valoresUnicos("riesgo") },
@@ -447,6 +482,17 @@ function pintarEstructura() {
       .ms-opt{display:flex;gap:8px;align-items:center;padding:6px 8px;border-radius:6px;font-size:13px;cursor:pointer;white-space:nowrap}
       .ms-opt:hover{background:var(--s2)}
       .ms-opt input{accent-color:var(--blue);cursor:pointer}
+      /* v5 · cuenta y broker con listas cerradas */
+      .pl-box{grid-column:1/-1;border:1.5px solid var(--border);border-radius:10px;padding:12px;background:var(--surface)}
+      .pl-res{font-size:12px;margin-top:8px;display:flex;gap:6px;flex-wrap:wrap;align-items:center;min-height:18px}
+      .pl-res .ok{color:#15803d;font-weight:600}
+      .pl-res .warn{color:#b45309;font-weight:600}
+      .pl-res .mut{color:var(--txt3)}
+      .pl-res button{border:none;background:var(--blue-l);color:#1d4ed8;font-weight:600;font-size:11px;border-radius:99px;padding:3px 10px;cursor:pointer;font-family:inherit}
+      .pl-crear{margin-top:10px;background:var(--s2);border-radius:10px;padding:12px}
+      .pl-crear-tit{font-size:12px;font-weight:700;margin-bottom:8px}
+      .pl-crear-btns{display:flex;gap:8px;justify-content:flex-end;margin-top:8px}
+      .pl-mini{font-size:11px;color:var(--txt3);margin-top:3px}
     </style>
 
     <div class="page-hdr">
@@ -455,6 +501,7 @@ function pintarEstructura() {
         <div class="page-sub">${esAdmin() ? "Oportunidades comerciales del equipo" : "Mi pipeline — " + esc(u.nombreRep)}</div>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
+        ${esAdmin() ? `<button class="btn-secundario" id="pl-btn-calidad">🧹 Calidad de datos</button>` : ""}
         ${esAdmin() ? `<button class="btn-secundario" id="pl-btn-cuotas">⚙️ Cuotas</button>` : ""}
         <button class="btn-secundario" id="pl-btn-masiva">⚡ Carga masiva</button>
         <button class="btn-primario" id="pl-btn-nueva">＋ Nueva oportunidad</button>
@@ -465,6 +512,7 @@ function pintarEstructura() {
       <button class="pl-subtab active" id="pl-st-dash">📈 Dashboard</button>
       <button class="pl-subtab" id="pl-st-tabla">📋 Oportunidades</button>
       <button class="pl-subtab" id="pl-st-ctas">🏢 Cuentas</button>
+      <button class="pl-subtab" id="pl-st-brk">🤝 Brokers</button>
       <div class="pl-anio-tabs" id="pl-anio-tabs" title="Cada año muestra únicamente las oportunidades de ese año de radicación">
         ${ANIOS_VISTA.map(a => `<button type="button" class="pl-anio-tab ${a === anioVista ? "active" : ""}" data-anio="${a}">${a}</button>`).join("")}
       </div>
@@ -611,6 +659,9 @@ function pintarEstructura() {
       </div>
     </div>
 
+    <!-- ═══ SUB-VISTA: BROKERS (catálogo) ═══ -->
+    <div id="pl-sub-brk" style="display:none"></div>
+
     <!-- MODAL CREAR/EDITAR -->
     <div class="modal-overlay" id="pl-modal">
       <div class="modal-box">
@@ -622,9 +673,23 @@ function pintarEstructura() {
           <div class="form-grid">
             <div class="form-group full"><label class="form-label">Oportunidad *</label>
               <input class="form-input" id="pl-c-oportunidad" placeholder="Nombre de la oportunidad"/></div>
-            <div class="form-group full"><label class="form-label">Cuenta / Cliente *</label>
-              <input class="form-input" id="pl-c-cuenta" list="pl-dl-cuenta" placeholder="Nombre del cliente"/>
-              <datalist id="pl-dl-cuenta"></datalist></div>
+            <!-- 🏢 CUENTA: solo de la base (o crear una nueva) -->
+            <div class="pl-box">
+              <label class="form-label">Cuenta / Cliente *</label>
+              <input class="form-input" id="pl-c-cuenta" list="pl-dl-cuenta" placeholder="Escribe para buscar la cuenta…" autocomplete="off" style="width:100%"/>
+              <datalist id="pl-dl-cuenta"></datalist>
+              <div class="pl-res" id="pl-cta-res"></div>
+              <div class="pl-crear" id="pl-cta-crear" style="display:none">
+                <div class="pl-crear-tit">＋ Crear cuenta nueva</div>
+                <div class="form-grid">
+                  <div class="form-group"><label class="form-label">Nombre *</label><input class="form-input" id="pl-nc-nombre" maxlength="120"/></div>
+                  <div class="form-group"><label class="form-label">Segmento *</label>
+                    <select class="form-select" id="pl-nc-seg"><option value="">— Selecciona —</option>${SEGMENTOS.map(x => `<option value="${x}">${SEGMENTO_TXT[x]}</option>`).join("")}</select></div>
+                </div>
+                <div class="pl-res" id="pl-nc-aviso"></div>
+                <div class="pl-crear-btns"><button type="button" class="btn-secundario" id="pl-nc-cancelar">Cancelar</button><button type="button" class="btn-primario" id="pl-nc-ok">Crear cuenta</button></div>
+              </div>
+            </div>
             <div class="form-group"><label class="form-label">Rep *</label>
               <select class="form-select" id="pl-c-rep"></select></div>
             <div class="form-group"><label class="form-label">Estado *</label>
@@ -637,28 +702,51 @@ function pintarEstructura() {
               <input class="form-input" id="pl-c-valor" type="number" min="0" placeholder="0"/></div>
             <div class="form-group"><label class="form-label">Probabilidad (%)</label>
               <input class="form-input" id="pl-c-prob" type="number" min="0" max="100" placeholder="50"/></div>
-            <div class="form-group"><label class="form-label">Tipo</label>
+            <div class="form-group"><label class="form-label">Tipo *</label>
               <select class="form-select" id="pl-c-tipo">
-                <option value="">Sin definir</option>
+                <option value="">— Selecciona —</option>
                 ${TIPOS.map(t => `<option>${t}</option>`).join("")}
               </select></div>
-            <div class="form-group"><label class="form-label">Canal</label>
-              <input class="form-input" id="pl-c-canal" list="pl-dl-canal"/>
-              <datalist id="pl-dl-canal"></datalist></div>
-            <div class="form-group"><label class="form-label">Origen</label>
-              <input class="form-input" id="pl-c-origen" list="pl-dl-origen"/>
-              <datalist id="pl-dl-origen"></datalist></div>
+            <div class="form-group"><label class="form-label">Segmento *</label>
+              <select class="form-select" id="pl-c-segmento">
+                <option value="">— Selecciona —</option>
+                ${SEGMENTOS.map(x => `<option value="${x}">${SEGMENTO_TXT[x]}</option>`).join("")}
+              </select>
+              <div class="pl-mini" id="pl-seg-nota"></div></div>
+            <div class="form-group"><label class="form-label">Canal *</label>
+              <select class="form-select" id="pl-c-canal">
+                <option value="">— Selecciona —</option>
+                ${CANALES.map(x => `<option>${x}</option>`).join("")}
+              </select></div>
+            <div class="form-group"><label class="form-label">Origen *</label>
+              <select class="form-select" id="pl-c-origen"></select></div>
+            <!-- 🤝 BROKER (solo canal Indirecto) -->
+            <div class="pl-box" id="pl-brk-wrap" style="display:none">
+              <label class="form-label">Broker *</label>
+              <div style="display:flex;gap:8px">
+                <select class="form-select" id="pl-c-broker" style="flex:1;min-width:0"></select>
+                <button type="button" class="btn-secundario" id="pl-nb-abrir" style="white-space:nowrap;font-size:12px">＋ Crear broker</button>
+              </div>
+              <div class="pl-res" id="pl-brk-res"></div>
+              <div class="pl-crear" id="pl-brk-crear" style="display:none">
+                <div class="pl-crear-tit">＋ Crear broker</div>
+                <div class="form-grid">
+                  <div class="form-group"><label class="form-label">Nombre del broker *</label><input class="form-input" id="pl-nb-nombre" maxlength="120"/></div>
+                  <div class="form-group"><label class="form-label">Empresa</label><input class="form-input" id="pl-nb-empresa" maxlength="120"/></div>
+                  <div class="form-group"><label class="form-label">Persona de contacto</label><input class="form-input" id="pl-nb-contacto" maxlength="120"/></div>
+                  <div class="form-group"><label class="form-label">Correo</label><input class="form-input" id="pl-nb-correo" type="email" maxlength="160"/></div>
+                  <div class="form-group"><label class="form-label">Teléfono</label><input class="form-input" id="pl-nb-tel" type="tel" maxlength="40"/></div>
+                  <div class="form-group"><label class="form-label">Notas</label><input class="form-input" id="pl-nb-notas" maxlength="300"/></div>
+                </div>
+                <div class="pl-res" id="pl-nb-aviso"></div>
+                <div class="pl-crear-btns"><button type="button" class="btn-secundario" id="pl-nb-cancelar">Cancelar</button><button type="button" class="btn-primario" id="pl-nb-ok">Crear broker</button></div>
+              </div>
+            </div>
             <div class="form-group"><label class="form-label">Riesgo</label>
               <select class="form-select" id="pl-c-riesgo">
                 <option value="">—</option>
                 ${RIESGOS.map(r => `<option>${r}</option>`).join("")}
               </select></div>
-            <div class="form-group"><label class="form-label">Segmento</label>
-              <input class="form-input" id="pl-c-segmento" list="pl-dl-segmento"/>
-              <datalist id="pl-dl-segmento"></datalist></div>
-            <div class="form-group"><label class="form-label">Broker</label>
-              <input class="form-input" id="pl-c-broker" list="pl-dl-broker"/>
-              <datalist id="pl-dl-broker"></datalist></div>
             <div class="form-group"><label class="form-label">Mes inicio</label>
               <select class="form-select" id="pl-c-mes-inicio">
                 <option value="">—</option>
@@ -723,11 +811,14 @@ function pintarEstructura() {
           <button class="modal-close" id="ml-cerrar">×</button>
         </div>
         <div class="modal-body">
-          ${esAdmin() ? `
-          <div class="form-group" style="max-width:280px;margin-bottom:12px">
-            <label class="form-label">Rep para todas las filas *</label>
-            <select class="form-select" id="ml-rep"></select>
-          </div>` : ""}
+          <p class="hint" style="margin:0 0 10px">Estos datos se aplican a todas las filas. Las cuentas deben existir en la base (si falta alguna, créala desde ＋ Nueva oportunidad).</p>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-bottom:14px">
+            ${esAdmin() ? `<div class="form-group"><label class="form-label">Rep *</label><select class="form-select" id="ml-rep"></select></div>` : ""}
+            <div class="form-group"><label class="form-label">Tipo *</label><select class="form-select" id="ml-tipo"><option value="">—</option>${TIPOS.map(t => `<option>${t}</option>`).join("")}</select></div>
+            <div class="form-group"><label class="form-label">Canal *</label><select class="form-select" id="ml-canal"><option value="">—</option>${CANALES.map(t => `<option>${t}</option>`).join("")}</select></div>
+            <div class="form-group"><label class="form-label">Origen *</label><select class="form-select" id="ml-origen"></select></div>
+            <div class="form-group" id="ml-brk-wrap" style="display:none"><label class="form-label">Broker *</label><select class="form-select" id="ml-broker"></select></div>
+          </div>
           <div style="display:grid;grid-template-columns:2fr 2fr 1.2fr 1.1fr .7fr 1.1fr 34px;gap:8px;font-size:10px;font-weight:700;color:var(--txt3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px">
             <span>Oportunidad *</span><span>Cuenta *</span><span>Estado</span><span>Valor (COP) *</span><span>Prob %</span><span>Mes rad.</span><span></span>
           </div>
@@ -754,7 +845,7 @@ function pintarEstructura() {
   $("ctas-buscar").addEventListener("input", (e) => {
     if (e.inputType === "insertReplacementText" || e.inputType === undefined) {
       const v = e.target.value.trim().toLowerCase();
-      if (nombresCuentas().some(n => n.toLowerCase() === v)) abrirDesdeBuscador();
+      if (cuentaDe(v)) abrirDesdeBuscador();
     }
   });
   alCambiarCuentas(() => { llenarBuscadorCuentas(); renderCuentas(); });
@@ -786,6 +877,23 @@ function pintarEstructura() {
   $("pl-btn-guardar").addEventListener("click", guardar);
   $("pl-btn-eliminar").addEventListener("click", eliminar);
   $("pl-c-estado").addEventListener("change", actualizarHintEstado);
+  // Cuenta / canal / broker con listas cerradas
+  $("pl-c-cuenta").addEventListener("input", () => { confirmarParecida = false; alCambiarCuentaPl(); });
+  $("pl-c-canal").addEventListener("change", alCambiarCanal);
+  $("pl-nc-nombre").addEventListener("input", () => { confirmarParecida = false; avisoCuentaNueva(); });
+  $("pl-nc-cancelar").addEventListener("click", () => { $("pl-cta-crear").style.display = "none"; });
+  $("pl-nc-ok").addEventListener("click", crearCuentaDesdeForm);
+  $("pl-nb-abrir").addEventListener("click", () => abrirCrearBroker(""));
+  $("pl-nb-nombre").addEventListener("input", () => { confirmarBrokerParecido = false; avisoBrokerNuevo(); });
+  $("pl-nb-cancelar").addEventListener("click", () => { $("pl-brk-crear").style.display = "none"; });
+  $("pl-nb-ok").addEventListener("click", crearBrokerDesdeForm);
+  $("pl-c-broker").addEventListener("change", () => { $("pl-brk-res").innerHTML = ""; });
+  $("ml-canal").addEventListener("change", () => {
+    poblarOrigen("ml-origen", $("ml-canal").value, $("ml-origen").value);
+    $("ml-brk-wrap").style.display = $("ml-canal").value === "Indirecto" ? "flex" : "none";
+  });
+  $("pl-st-brk").addEventListener("click", () => mostrarSub("brk"));
+  if (esAdmin()) $("pl-btn-calidad").addEventListener("click", abrirCalidadDatos);
 
   // Modal de cuotas (solo Gerencia)
   if (esAdmin()) {
@@ -849,6 +957,9 @@ function mostrarSub(nombre) {
   $("pl-sub-dash").style.display = nombre === "dash" ? "block" : "none";
   $("pl-sub-tabla").style.display = nombre === "tabla" ? "block" : "none";
   $("pl-sub-ctas").style.display = nombre === "ctas" ? "block" : "none";
+  $("pl-st-brk").classList.toggle("active", nombre === "brk");
+  $("pl-sub-brk").style.display = nombre === "brk" ? "block" : "none";
+  if (nombre === "brk") renderBrokers();
 }
 
 function actualizarOpcionesFiltros() {
@@ -864,9 +975,7 @@ function actualizarOpcionesFiltros() {
       nombres.map(r => `<option ${r === actualRep ? "selected" : ""}>${esc(r)}</option>`).join("");
   }
 
-  const dl = (id, campo) => { const el = $(id); if (el) el.innerHTML = valoresUnicos(campo).map(v => `<option value="${esc(v)}">`).join(""); };
-  dl("pl-dl-canal", "canal"); dl("pl-dl-origen", "origen"); dl("pl-dl-cuenta", "cuenta");
-  dl("pl-dl-segmento", "segmento"); dl("pl-dl-broker", "broker");
+  llenarListasForm();
 }
 
 // ═══════════════════════════════════════════
@@ -877,6 +986,7 @@ function render() {
   renderDashboard();
   renderTabla();
   renderCuentas();
+  renderBrokers();
 }
 
 // Salta a la pestaña Oportunidades con un filtro de estado aplicado.
@@ -900,6 +1010,11 @@ function exportarCSV() {
     if (k === "prob_pct") return Math.round(probDe(d) * 100);
     if (k === "anio_radicacion") return anioEfectivo(d);
     if (k === "tipo") return tipoDe(d) || (d.tipo ?? "");
+    if (k === "cuenta") return nombreOficial(d.cuenta);
+    if (k === "canal") return canalDe(d);
+    if (k === "origen") return origenDe(d);
+    if (k === "segmento") return segmentoDe(d);
+    if (k === "broker") return brokerNom(d);
     return d[k] ?? "";
   }).map(celda).join(";"));
   const csv = "\ufeff" + [cols.join(";"), ...filas].join("\n");
@@ -1103,8 +1218,8 @@ function renderDashboard() {
   const ctaMap = {};
   propios.forEach(d => {
     if (!TOP_ESTADOS.includes(d.estado)) return; // Perdido no entra
-    const k = String(d.cuenta || "").trim();
-    if (!k) return;
+    if (!String(d.cuenta || "").trim()) return;
+    const k = nombreOficial(d.cuenta);   // una sola barra aunque esté escrita distinto
     const m = ctaMap[k] = ctaMap[k] || { total: 0, activo: 0, hold: 0, n: 0, porEstado: {} };
     const v = parseFloat(d.valor) || 0;
     m.n++;
@@ -1261,7 +1376,7 @@ function renderDashboard() {
     b.n++; b.v += parseFloat(d.valor) || 0;
   });
   const segLabels = Object.keys(bucketsSeg).sort((a, b) => bucketsSeg[b].v - bucketsSeg[a].v);
-  const SEG_COLORS = { "Retail": "#d97706", "Corporativo": "#2563EB", "Sin segmento": "#9b9b96" };
+  const SEG_COLORS = { "Retail": "#d97706", "Corporativo": "#2563EB", "Público": "#dc2626", "Sin segmento": "#9b9b96" };
   mkChart("ch-seg", {
     type: "doughnut",
     data: {
@@ -1290,11 +1405,9 @@ function renderDashboard() {
   // ── Canal (Directo / Indirecto), valores tal como están en la base ──
   const bucketsCanal = {};
   vigentes.forEach(d => {
-    const crudo = String(d.canal || "").trim();
-    const clave = crudo || "Sin canal";
-    const b = bucketsCanal[clave] = bucketsCanal[clave] || { n: 0, v: 0, crudos: new Set() };
+    const clave = canalDe(d) || "Sin canal";
+    const b = bucketsCanal[clave] = bucketsCanal[clave] || { n: 0, v: 0 };
     b.n++; b.v += parseFloat(d.valor) || 0;
-    if (crudo) b.crudos.add(crudo);
   });
   const canalLabels = Object.keys(bucketsCanal).sort((a, b) => bucketsCanal[b].v - bucketsCanal[a].v);
   const CANAL_COLORS = { "Directo": "#7c3aed", "Indirecto": "#0d9488", "Sin canal": "#9b9b96" };
@@ -1310,7 +1423,7 @@ function renderDashboard() {
       onClick: (evt, elems) => {
         if (!elems.length) return;
         const k = canalLabels[elems[0].index];
-        filtros.canal = k === "Sin canal" ? new Set(["Sin canal"]) : new Set([...bucketsCanal[k].crudos]);
+        filtros.canal = new Set([k]);
         actualizarMultiselects(); render(); mostrarSub("tabla");
       },
       plugins: {
@@ -1326,8 +1439,7 @@ function renderDashboard() {
   // Clic en una porción o en la leyenda → filtra TODO el dashboard (toggle).
   const bucketsOrigen = {};
   vigentes.forEach(d => {
-    const crudo = String(d.origen || "").trim();
-    const clave = crudo || "Sin origen";
+    const clave = origenDe(d) || "Sin origen";
     const b = bucketsOrigen[clave] = bucketsOrigen[clave] || { n: 0, v: 0 };
     b.n++; b.v += parseFloat(d.valor) || 0;
   });
@@ -1370,7 +1482,7 @@ function renderDashboard() {
   // ── Top brokers por valor (con clic para ver sus oportunidades) ──
   const brokers = {};
   vigentes.forEach(d => {
-    const nom = String(d.broker || "").trim();
+    const nom = brokerNom(d);
     if (!nom) return;
     const x = brokers[nom] = brokers[nom] || { n: 0, v: 0 };
     x.n++; x.v += parseFloat(d.valor) || 0;
@@ -1419,14 +1531,14 @@ function filtrarDeals() {
     if (filtros.rep.size && !filtros.rep.has(d.rep)) return false;
     if (filtros.estado.size && !filtros.estado.has(d.estado)) return false;
     if (filtros.tipo.size && !filtros.tipo.has(tipoDe(d) || "Sin tipo")) return false;
-    if (filtros.canal.size && !filtros.canal.has(String(d.canal || "").trim() || "Sin canal")) return false;
+    if (filtros.canal.size && !filtros.canal.has(canalDe(d) || "Sin canal")) return false;
     if (filtros.segmento.size && !filtros.segmento.has(segmentoDe(d) || "Sin segmento")) return false;
-    if (filtros.origen.size && !filtros.origen.has(String(d.origen || "").trim() || "Sin origen")) return false;
+    if (filtros.origen.size && !filtros.origen.has(origenDe(d) || "Sin origen")) return false;
     if (filtros.riesgo.size && !filtros.riesgo.has(String(d.riesgo || "").trim())) return false;
     if (filtros.mes.size && !filtros.mes.has(d.mes_radicacion)) return false;
-    if (filtros.cuenta && String(d.cuenta || "").trim().toLowerCase() !== filtros.cuenta.toLowerCase()) return false;
+    if (filtros.cuenta && claveCuenta(d.cuenta) !== claveCuenta(filtros.cuenta)) return false;
     if (filtros.texto) {
-      const blob = ((d.oportunidad || "") + " " + (d.cuenta || "") + " " + (d.broker || "")).toLowerCase();
+      const blob = ((d.oportunidad || "") + " " + (d.cuenta || "") + " " + nombreOficial(d.cuenta) + " " + brokerNom(d)).toLowerCase();
       if (!blob.includes(filtros.texto)) return false;
     }
     return true;
@@ -1570,18 +1682,33 @@ function abrirModal(deal) {
   $("pl-modal-titulo").textContent = deal ? "Editar oportunidad" : "Nueva oportunidad";
   $("pl-modal-error").textContent = "";
   $("pl-c-oportunidad").value = deal?.oportunidad || "";
-  $("pl-c-cuenta").value = deal?.cuenta || "";
+  cuentaNueva = null; brokerNuevo = null; confirmarParecida = false; confirmarBrokerParecido = false;
+  $("pl-cta-crear").style.display = "none";
+  $("pl-brk-crear").style.display = "none";
+  $("pl-c-cuenta").value = deal ? nombreOficial(deal.cuenta) : "";
   if (esAdmin()) $("pl-c-rep").value = deal?.rep || "";
   $("pl-c-estado").value = deal?.estado || "";
   $("pl-c-valor").value = deal?.valor ?? "";
   const prob = parseFloat(deal?.prob);
   $("pl-c-prob").value = isNaN(prob) ? "" : Math.round(prob * 100);
-  setSelectConLegado($("pl-c-tipo"), deal ? (tipoDe(deal) || deal.tipo || "") : "");
-  $("pl-c-canal").value = deal?.canal || "";
-  $("pl-c-origen").value = deal?.origen || "";
+  // Listas cerradas: los valores viejos se traducen; si no se puede, quedan vacíos y se piden
+  $("pl-c-tipo").value = deal ? tipoDe(deal) : "";
+  $("pl-c-segmento").value = deal ? (normSegmento(deal.segmento) || normSegmento(deal.canal)) : "";
+  $("pl-c-canal").value = deal ? canalDe(deal) : "";
+  poblarOrigen("pl-c-origen", $("pl-c-canal").value, deal ? origenDe(deal) : "");
+  $("pl-brk-wrap").style.display = $("pl-c-canal").value === "Indirecto" ? "block" : "none";
+  poblarBrokersSelect("pl-c-broker", "");
+  $("pl-brk-res").innerHTML = "";
+  const brkViejo = String(deal?.broker || "").trim();
+  if (brkViejo) {
+    const b = brokerDe(brkViejo);
+    if (b) $("pl-c-broker").value = b.nombre;
+    else $("pl-brk-res").innerHTML = `<span class="warn">⚠ El broker “${esc(brkViejo)}” de este registro no está creado.</span><button type="button" id="pl-brk-crear-viejo">＋ Crearlo</button>`;
+    const bv = $("pl-brk-crear-viejo");
+    if (bv) bv.addEventListener("click", () => abrirCrearBroker(brkViejo));
+  }
+  alCambiarCuentaPl();
   $("pl-c-riesgo").value = deal?.riesgo || "";
-  $("pl-c-segmento").value = deal?.segmento || "";
-  $("pl-c-broker").value = deal?.broker || "";
   $("pl-c-mes-inicio").value = deal?.mes_inicio || "";
   $("pl-c-mes").value = deal?.mes_radicacion || "";
   // Nueva oportunidad → por defecto el año que se está viendo en pantalla
@@ -1604,14 +1731,42 @@ async function guardar() {
   const u = obtenerUsuario();
 
   const oportunidad = $("pl-c-oportunidad").value.trim();
-  const cuenta = $("pl-c-cuenta").value.trim();
+  const ctaSel = cuentaElegida();
   const rep = esAdmin() ? $("pl-c-rep").value : u.nombreRep;
   const estado = $("pl-c-estado").value;
   const valor = parseFloat($("pl-c-valor").value);
 
-  if (!oportunidad || !cuenta || !rep || !estado || isNaN(valor)) {
+  if (!oportunidad || !$("pl-c-cuenta").value.trim() || !rep || !estado || isNaN(valor)) {
     err.textContent = "Completa los campos obligatorios (*).";
     return;
+  }
+  if (!ctaSel) {
+    err.textContent = "La cuenta debe existir en la base: elígela de la lista o usa “＋ Crear cuenta”.";
+    return;
+  }
+  const cuenta = ctaSel.nombre;
+  const tipo = $("pl-c-tipo").value;
+  const segmento = ctaSel.segmento || $("pl-c-segmento").value;
+  const canal = $("pl-c-canal").value;
+  const origen = canal === "Indirecto" ? ORIGEN_INDIRECTO : $("pl-c-origen").value;
+  if (!tipo || !segmento || !canal || !origen) {
+    err.textContent = "Completa Tipo, Segmento, Canal y Origen.";
+    return;
+  }
+  let broker = "", brokerId = "";
+  if (canal === "Indirecto") {
+    const bn = $("pl-c-broker").value;
+    const b = brokerDe(bn) || (brokerNuevo && claveCuenta(brokerNuevo.nombre) === claveCuenta(bn) ? brokerNuevo : null);
+    if (!b) { err.textContent = "Elige el broker de la lista (o créalo con “＋ Crear broker”)."; return; }
+    broker = b.nombre; brokerId = claveCuenta(b.nombre);
+  }
+  // La ficha de la cuenta guarda el segmento (así Agenda y Sprint lo ven igual)
+  if (!ctaSel.fichaId) {
+    const rf = await crearCuenta(ctaSel.clave, { nombre: cuenta, segmento, contactos: [], creadoPor: u?.nombreRep || "Gerencia", origen: "Pipeline" });
+    if (!rf.ok) console.warn("No se creó la ficha de la cuenta:", rf.error);
+  } else if (!normSegmento(ctaSel.ficha?.segmento)) {
+    const rf = await actualizarCuenta(ctaSel.fichaId, { segmento });
+    if (!rf.ok) console.warn("No se actualizó el segmento de la cuenta:", rf.error);
   }
 
   const probPct = parseFloat($("pl-c-prob").value);
@@ -1620,16 +1775,12 @@ async function guardar() {
   const { prob, esperado } = probYEsperado(estado, valor, probIngresada);
   const anioSel = parseInt($("pl-c-anio").value);
   const datos = {
-    oportunidad, cuenta, rep, estado,
+    oportunidad, cuenta, cuentaId: ctaSel.clave, rep, estado,
     valor,
     prob,
     esperado,
-    tipo: $("pl-c-tipo").value,
-    canal: $("pl-c-canal").value.trim(),
-    origen: $("pl-c-origen").value.trim(),
+    tipo, canal, origen, segmento, broker, brokerId,
     riesgo: $("pl-c-riesgo").value,
-    segmento: $("pl-c-segmento").value.trim(),
-    broker: $("pl-c-broker").value.trim(),
     mes_inicio: $("pl-c-mes-inicio").value,
     mes_radicacion: $("pl-c-mes").value,
     anio_radicacion: isNaN(anioSel) ? anioVista : anioSel,
@@ -1730,9 +1881,9 @@ function renderCuentas() {
 
   const mapa = {};
   visibles.forEach(d => {
-    const raw = String(d.cuenta || "").trim() || "(Sin cuenta)";
-    const k = raw.toLowerCase();
-    const m = mapa[k] = mapa[k] || { nombre: raw, n: 0, total: 0, activo: 0, esperado: 0, ganado: 0 };
+    const raw = String(d.cuenta || "").trim();
+    const k = raw ? claveCuenta(raw) : "(sin cuenta)";
+    const m = mapa[k] = mapa[k] || { nombre: raw ? nombreOficial(raw) : "(Sin cuenta)", n: 0, total: 0, activo: 0, esperado: 0, ganado: 0, segmento: raw ? (cuentaDe(raw)?.segmento || "") : "" };
     const v = parseFloat(d.valor) || 0;
     m.n++;
     // Valor total = activo + ganado (On hold y Perdidas no suman)
@@ -1759,7 +1910,7 @@ function renderCuentas() {
     ? `<tr><td colspan="7" class="lista-vacia">Sin cuentas con los filtros actuales</td></tr>`
     : lista.map(x => `
       <tr class="cta-row" data-cta="${esc(x.nombre)}" style="cursor:pointer">
-        <td><b>${esc(x.nombre)}</b></td>
+        <td><b>${esc(x.nombre)}</b>${x.segmento ? ` <span class="badge" style="background:#F3F4F6;color:#374151">${esc(SEGMENTO_TXT[x.segmento])}</span>` : ""}</td>
         <td style="text-align:right">${x.n}</td>
         <td style="text-align:right" title="${fmtFull(x.total)}"><b>${fmt(x.total)}</b></td>
         <td style="text-align:right">${fmt(x.activo)}</td>
@@ -1802,19 +1953,233 @@ function abrirFicha(nombre) {
 
 function llenarBuscadorCuentas() {
   const dl = $("ctas-dl");
-  if (dl) dl.innerHTML = nombresCuentas().map(n => `<option value="${esc(n)}">`).join("");
+  if (dl) dl.innerHTML = listaCuentas().map(c => `<option value="${esc(c.nombre)}">`).join("");
 }
 function abrirDesdeBuscador() {
   const inp = $("ctas-buscar");
   const txt = inp.value.trim();
   if (!txt) return;
   const k = txt.toLowerCase();
-  const nombres = nombresCuentas();
-  const exacto = nombres.find(n => n.toLowerCase() === k);
+  const nombres = listaCuentas().map(c => c.nombre);
+  const exacta = cuentaDe(txt);
+  const exacto = exacta?.nombre || nombres.find(n => n.toLowerCase() === k);
   const parecido = exacto || nombres.find(n => n.toLowerCase().includes(k));
   if (!parecido) { toast("No encontramos esa cuenta"); return; }
   inp.value = "";
   abrirFicha(parecido);
+}
+
+// ═══════════════════════════════════════════
+// 🏢 CUENTA Y 🤝 BROKER EN EL FORMULARIO (listas cerradas)
+// ═══════════════════════════════════════════
+function llenarListasForm() {
+  const dl = $("pl-dl-cuenta");
+  if (dl) dl.innerHTML = listaCuentas().map(c => `<option value="${esc(c.nombre)}">`).join("");
+  poblarBrokersSelect("pl-c-broker", $("pl-c-broker")?.value);
+  poblarBrokersSelect("ml-broker", $("ml-broker")?.value);
+}
+function poblarBrokersSelect(id, actual) {
+  const sel = $(id);
+  if (!sel) return;
+  const lista = listaBrokers();
+  if (brokerNuevo && !lista.some(b => claveCuenta(b.nombre) === claveCuenta(brokerNuevo.nombre))) lista.push(brokerNuevo);
+  sel.innerHTML = `<option value="">${lista.length ? "— Selecciona el broker —" : "— Aún no hay brokers: créalo —"}</option>` +
+    lista.map(b => `<option value="${esc(b.nombre)}">${esc(b.nombre)}${b.empresa ? " · " + esc(b.empresa) : ""}</option>`).join("");
+  if (actual && lista.some(b => b.nombre === actual)) sel.value = actual;
+}
+// Origen depende del canal: Directo → Referido/Rep/Gerencia/CRM · Indirecto → Broker
+function poblarOrigen(selId, canal, actual) {
+  const sel = $(selId);
+  if (!sel) return;
+  if (canal === "Indirecto") {
+    sel.innerHTML = `<option value="${ORIGEN_INDIRECTO}">🤝 ${ORIGEN_INDIRECTO}</option>`;
+    sel.value = ORIGEN_INDIRECTO; sel.disabled = true;
+  } else if (canal === "Directo") {
+    sel.disabled = false;
+    sel.innerHTML = `<option value="">— Selecciona —</option>` + ORIGENES_DIRECTO.map(o => `<option>${o}</option>`).join("");
+    sel.value = ORIGENES_DIRECTO.includes(actual) ? actual : "";
+  } else {
+    sel.disabled = true;
+    sel.innerHTML = `<option value="">Elige primero el canal</option>`;
+  }
+}
+function alCambiarCanal() {
+  const canal = $("pl-c-canal").value;
+  poblarOrigen("pl-c-origen", canal, $("pl-c-origen").value);
+  $("pl-brk-wrap").style.display = canal === "Indirecto" ? "block" : "none";
+  if (canal !== "Indirecto") $("pl-brk-crear").style.display = "none";
+}
+
+// Cuenta elegida en el formulario (de la base o recién creada) o null
+function cuentaElegida() {
+  const v = $("pl-c-cuenta").value.trim();
+  if (!v) return null;
+  const c = cuentaDe(v);
+  if (c) return c;
+  if (cuentaNueva && cuentaNueva.clave === claveCuenta(v)) return cuentaNueva;
+  return null;
+}
+function sugerenciasCuenta(texto, n) {
+  if (String(texto).trim().length < 3) return [];
+  return listaCuentas()
+    .map(c => ({ c, p: parecidoCuentas(texto, c.nombre) }))
+    .filter(x => x.p >= 0.5)
+    .sort((a, b) => b.p - a.p).slice(0, n).map(x => x.c);
+}
+function alCambiarCuentaPl() {
+  const v = $("pl-c-cuenta").value.trim();
+  const res = $("pl-cta-res");
+  const seg = $("pl-c-segmento");
+  const c = cuentaElegida();
+  const nota = $("pl-seg-nota");
+  if (!v) {
+    res.innerHTML = `<span class="mut">Elige la cuenta de la lista. ¿Cliente nuevo?</span><button type="button" data-nc>＋ Crear cuenta</button>`;
+    seg.disabled = false; nota.textContent = "";
+  } else if (c) {
+    res.innerHTML = `<span class="ok">✓ ${esc(c.nombre)}</span>` +
+      (c.segmento ? badge(SEGMENTO_TXT[c.segmento], { bg: "#F3F4F6", cl: "#374151" }) : `<span class="warn">sin segmento: elígelo abajo</span>`) +
+      (v !== c.nombre ? `<span class="mut">se guardará como “${esc(c.nombre)}”</span>` : "");
+    if (c.segmento) { seg.value = c.segmento; seg.disabled = true; nota.textContent = "Viene de la cuenta"; }
+    else { seg.disabled = false; nota.textContent = "Quedará guardado en la cuenta"; }
+  } else {
+    const sug = sugerenciasCuenta(v, 3);
+    res.innerHTML = `<span class="warn">⚠ “${esc(v)}” no está en la base.</span>` +
+      sug.map(x => `<button type="button" data-usar="${esc(x.nombre)}">¿${esc(x.nombre)}?</button>`).join("") +
+      `<button type="button" data-nc>＋ Crear cuenta</button>`;
+    seg.disabled = false; nota.textContent = "";
+  }
+  res.querySelectorAll("[data-usar]").forEach(b => b.addEventListener("click", () => { $("pl-c-cuenta").value = b.dataset.usar; alCambiarCuentaPl(); }));
+  res.querySelectorAll("[data-nc]").forEach(b => b.addEventListener("click", abrirCrearCuenta));
+}
+
+function abrirCrearCuenta() {
+  $("pl-cta-crear").style.display = "block";
+  $("pl-nc-nombre").value = $("pl-c-cuenta").value.trim();
+  $("pl-nc-seg").value = "";
+  confirmarParecida = false;
+  avisoCuentaNueva();
+  $("pl-nc-nombre").focus();
+}
+// Avisa si la cuenta nueva ya existe o se parece a otra
+function avisoCuentaNueva() {
+  const n = $("pl-nc-nombre").value.trim();
+  const av = $("pl-nc-aviso");
+  const btn = $("pl-nc-ok");
+  btn.textContent = "Crear cuenta";
+  if (n.length < 2) { av.innerHTML = ""; return { bloqueo: true }; }
+  const exacta = cuentaDe(n);
+  if (exacta) {
+    av.innerHTML = `<span class="warn">⚠ Ya existe como “${esc(exacta.nombre)}” (mayúsculas, puntos o SAS/SA no cuentan).</span><button type="button" id="pl-nc-usar">Usar esa cuenta</button>`;
+    $("pl-nc-usar").addEventListener("click", () => { $("pl-c-cuenta").value = exacta.nombre; $("pl-cta-crear").style.display = "none"; alCambiarCuentaPl(); });
+    return { bloqueo: true };
+  }
+  const sug = sugerenciasCuenta(n, 3);
+  if (sug.length) {
+    av.innerHTML = `<span class="warn">¿Es alguna de estas?</span>` + sug.map(x => `<button type="button" data-usar="${esc(x.nombre)}">${esc(x.nombre)}</button>`).join("");
+    av.querySelectorAll("[data-usar]").forEach(b => b.addEventListener("click", () => { $("pl-c-cuenta").value = b.dataset.usar; $("pl-cta-crear").style.display = "none"; alCambiarCuentaPl(); }));
+    if (!confirmarParecida) btn.textContent = "No, es otra: crear";
+    return { parecidas: true };
+  }
+  av.innerHTML = `<span class="ok">✓ Nombre disponible</span>`;
+  return {};
+}
+async function crearCuentaDesdeForm() {
+  const nombre = $("pl-nc-nombre").value.trim().replace(/\s+/g, " ");
+  const segmento = $("pl-nc-seg").value;
+  const chk = avisoCuentaNueva();
+  if (nombre.length < 2) { $("pl-nc-aviso").innerHTML = `<span class="warn">Escribe el nombre de la cuenta.</span>`; return; }
+  if (chk.bloqueo) return;
+  if (!segmento) { $("pl-nc-aviso").innerHTML = `<span class="warn">Elige el segmento.</span>`; return; }
+  if (chk.parecidas && !confirmarParecida) { confirmarParecida = true; $("pl-nc-ok").textContent = "Confirmar: crear cuenta nueva"; return; }
+  const u = obtenerUsuario();
+  const clave = claveCuenta(nombre);
+  const btn = $("pl-nc-ok");
+  btn.disabled = true;
+  const res = await crearCuenta(clave, { nombre, segmento, contactos: [], creadoPor: u?.nombreRep || "Gerencia", origen: "Pipeline · cuenta nueva" });
+  btn.disabled = false;
+  if (!res.ok) { $("pl-nc-aviso").innerHTML = `<span class="warn">${esc(res.error)}</span>`; return; }
+  cuentaNueva = { clave, nombre, segmento, fichaId: clave, ficha: { segmento } };
+  $("pl-c-cuenta").value = nombre;
+  $("pl-cta-crear").style.display = "none";
+  alCambiarCuentaPl();
+  toast(`✓ Cuenta “${nombre}” creada`);
+}
+
+function abrirCrearBroker(nombre) {
+  $("pl-brk-crear").style.display = "block";
+  ["pl-nb-nombre", "pl-nb-empresa", "pl-nb-contacto", "pl-nb-correo", "pl-nb-tel", "pl-nb-notas"].forEach(id => $(id).value = "");
+  $("pl-nb-nombre").value = nombre || "";
+  confirmarBrokerParecido = false;
+  avisoBrokerNuevo();
+  $("pl-nb-nombre").focus();
+}
+function avisoBrokerNuevo() {
+  const n = $("pl-nb-nombre").value.trim();
+  const av = $("pl-nb-aviso");
+  $("pl-nb-ok").textContent = "Crear broker";
+  if (n.length < 2) { av.innerHTML = ""; return { bloqueo: true }; }
+  const ex = brokerDe(n);
+  if (ex) {
+    av.innerHTML = `<span class="warn">⚠ Ya existe el broker “${esc(ex.nombre)}”.</span><button type="button" id="pl-nb-usar">Usarlo</button>`;
+    $("pl-nb-usar").addEventListener("click", () => { $("pl-c-broker").value = ex.nombre; $("pl-brk-crear").style.display = "none"; $("pl-brk-res").innerHTML = ""; });
+    return { bloqueo: true };
+  }
+  const sug = listaBrokers().filter(b => parecidoCuentas(n, b.nombre) >= 0.5).slice(0, 3);
+  if (sug.length) {
+    av.innerHTML = `<span class="warn">¿Es alguno de estos?</span>` + sug.map(b => `<button type="button" data-usar="${esc(b.nombre)}">${esc(b.nombre)}</button>`).join("");
+    av.querySelectorAll("[data-usar]").forEach(b => b.addEventListener("click", () => { $("pl-c-broker").value = b.dataset.usar; $("pl-brk-crear").style.display = "none"; $("pl-brk-res").innerHTML = ""; }));
+    if (!confirmarBrokerParecido) $("pl-nb-ok").textContent = "No, es otro: crear";
+    return { parecidos: true };
+  }
+  av.innerHTML = `<span class="ok">✓ Nombre disponible</span>`;
+  return {};
+}
+async function crearBrokerDesdeForm() {
+  const nombre = $("pl-nb-nombre").value.trim().replace(/\s+/g, " ");
+  const correo = $("pl-nb-correo").value.trim();
+  const chk = avisoBrokerNuevo();
+  if (nombre.length < 2) { $("pl-nb-aviso").innerHTML = `<span class="warn">Escribe el nombre del broker.</span>`; return; }
+  if (chk.bloqueo) return;
+  if (correo && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(correo)) { $("pl-nb-aviso").innerHTML = `<span class="warn">El correo no es válido.</span>`; return; }
+  if (chk.parecidos && !confirmarBrokerParecido) { confirmarBrokerParecido = true; $("pl-nb-ok").textContent = "Confirmar: crear broker nuevo"; return; }
+  const u = obtenerUsuario();
+  const datos = {
+    nombre, empresa: $("pl-nb-empresa").value.trim(), contacto: $("pl-nb-contacto").value.trim(),
+    correo, telefono: $("pl-nb-tel").value.trim(), notas: $("pl-nb-notas").value.trim(),
+    creadoPor: u?.nombreRep || "Gerencia"
+  };
+  const btn = $("pl-nb-ok");
+  btn.disabled = true;
+  const res = await crearBroker(datos);
+  btn.disabled = false;
+  if (!res.ok) { $("pl-nb-aviso").innerHTML = `<span class="warn">${esc(res.error)}</span>`; return; }
+  brokerNuevo = datos;
+  poblarBrokersSelect("pl-c-broker", nombre);
+  $("pl-c-broker").value = nombre;
+  $("pl-brk-crear").style.display = "none";
+  $("pl-brk-res").innerHTML = "";
+  toast(`✓ Broker “${nombre}” creado`);
+}
+
+// 🤝 Sub-pestaña Brokers
+function renderBrokers() {
+  const cont = $("pl-sub-brk");
+  if (!cont || cont.style.display === "none") return;
+  pintarBrokers(cont, {
+    deals: filtrarDeals(),
+    todos: baseDeals(),
+    anio: anioVista,
+    onVerOportunidades: (nombre) => {
+      filtros.texto = nombre.toLowerCase();
+      $("pl-f-texto").value = nombre;
+      render();
+      mostrarSub("tabla");
+    },
+    onAbrirDeal: (d) => {
+      if (puedeEditar(d)) abrirModal(d);
+      else toast(`Solo lectura: esta oportunidad es de ${d.rep || "otro rep"}`);
+    }
+  });
 }
 
 // ═══════════════════════════════════════════
@@ -1823,7 +2188,7 @@ function abrirDesdeBuscador() {
 function mlFila() {
   return `<div class="ml-fila" style="display:grid;grid-template-columns:2fr 2fr 1.2fr 1.1fr .7fr 1.1fr 34px;gap:8px;margin-bottom:8px;align-items:center">
     <input class="form-input ml-opp" placeholder="Nombre de la oportunidad"/>
-    <input class="form-input ml-cta" list="pl-dl-cuenta" placeholder="Cliente"/>
+    <input class="form-input ml-cta" list="pl-dl-cuenta" placeholder="Cliente (de la lista)" autocomplete="off"/>
     <select class="form-select ml-est">${ESTADOS.map(e => `<option>${e}</option>`).join("")}</select>
     <input class="form-input ml-val" type="number" min="0" placeholder="0"/>
     <input class="form-input ml-pro" type="number" min="0" max="100" placeholder="50"/>
@@ -1846,6 +2211,10 @@ function abrirModalMasiva() {
     selRep.innerHTML = `<option value="">Seleccionar...</option>` +
       nombres.map(r => `<option ${r === actual ? "selected" : ""}>${esc(r)}</option>`).join("");
   }
+  $("ml-tipo").value = ""; $("ml-canal").value = "";
+  poblarOrigen("ml-origen", "", "");
+  poblarBrokersSelect("ml-broker", "");
+  $("ml-brk-wrap").style.display = "none";
   $("ml-filas").innerHTML = mlFila() + mlFila() + mlFila();
   actualizarConteoML();
   $("ml-modal").classList.add("open");
@@ -1857,6 +2226,15 @@ async function guardarMasiva() {
   const u = obtenerUsuario();
   const rep = esAdmin() ? ($("ml-rep") ? $("ml-rep").value : "") : u.nombreRep;
   if (!rep) { err.textContent = "Selecciona el rep para las filas."; return; }
+  const mlTipo = $("ml-tipo").value, mlCanal = $("ml-canal").value;
+  const mlOrigen = mlCanal === "Indirecto" ? ORIGEN_INDIRECTO : $("ml-origen").value;
+  if (!mlTipo || !mlCanal || !mlOrigen) { err.textContent = "Elige Tipo, Canal y Origen para las filas."; return; }
+  let mlBroker = "";
+  if (mlCanal === "Indirecto") {
+    const b = brokerDe($("ml-broker").value);
+    if (!b) { err.textContent = "Elige el broker para las filas."; return; }
+    mlBroker = b.nombre;
+  }
 
   const filas = [...$("ml-filas").querySelectorAll(".ml-fila")];
   const porCrear = [];
@@ -1874,14 +2252,20 @@ async function guardarMasiva() {
       err.textContent = `Fila ${i + 1}: completa Oportunidad, Cuenta y Valor.`;
       return;
     }
+    const c = cuentaDe(cta);
+    if (!c) {
+      err.textContent = `Fila ${i + 1}: “${cta}” no está en la base de cuentas. Elígela de la lista o créala primero.`;
+      return;
+    }
     const proPct = proStr === "" ? 50 : Math.min(Math.max(parseFloat(proStr) || 0, 0), 100);
     const { prob, esperado } = probYEsperado(est, val, proPct / 100);
     porCrear.push({
-      oportunidad: opp, cuenta: cta, rep, estado: est,
+      oportunidad: opp, cuenta: c.nombre, cuentaId: c.clave, rep, estado: est,
       valor: val, prob, esperado,
       // Se crean en el año que se está viendo en pantalla
       mes_radicacion: mes, anio_radicacion: anioVista,
-      tipo: "", canal: "", origen: "", riesgo: "", segmento: "", broker: "",
+      tipo: mlTipo, canal: mlCanal, origen: mlOrigen, riesgo: "", segmento: c.segmento || "",
+      broker: mlBroker, brokerId: mlBroker ? claveCuenta(mlBroker) : "",
       mes_inicio: "", motivo_perdida: "", comentarios: ""
     });
   }

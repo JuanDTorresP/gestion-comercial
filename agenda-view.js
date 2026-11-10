@@ -1,5 +1,9 @@
 // ═══════════════════════════════════════════════════════════
-// agenda-view.js — v5.1
+// agenda-view.js — v5.2
+// v5.2 (nov 2026): SEGMENTO único (Retail / Corporativo / Público) en lugar
+//       de Canal + Sector; la misma cuenta escrita distinto ("SAS"/"SA",
+//       mayúsculas) es UNA sola (claveCuenta); la oportunidad creada desde
+//       una gestión pide canal / origen / broker de las listas cerradas.
 // v5.1: abrirGestionParaCuenta() → la ficha de cuenta abre el formulario
 //       con la cuenta ya elegida.
 // Cambios v5.0 (nov 2026):
@@ -57,6 +61,11 @@ import {
   suscribirCuentasSprint
 } from "./firestore-service.js";
 import { ACCIONES_SPRINT, PASOS_RUTA } from "./sprint-config.js";
+import {
+  SEGMENTOS, SEGMENTO_TXT, CANALES, ORIGENES_DIRECTO, ORIGEN_INDIRECTO,
+  segmentoDeRegistro, normSegmento, nombrePreferido, claveCuenta, parecidoCuentas
+} from "./catalogos.js";
+import { alCambiarCatalogo, brokers as listaBrokers, brokerDe } from "./cuentas-store.js";
 
 // ── Constantes de negocio ──
 const REPS_BASE = ["Patricia Lopera", "Clemencia Rodriguez", "Ivan Muñoz", "Johana Mayo"];
@@ -89,20 +98,20 @@ const CIUDAD_FIJA = "Bogotá";
 // Mes en que arranca el año fiscal (1 = enero → FY = año calendario).
 // Si el FY de Famoc arranca en otro mes, cambiar solo este número.
 const FY_INICIO_MES = 1;
-const SECTORES = ["Público", "Privado"];
-const SECTOR_TXT = { "Público": "🏛 Público (gobierno)", "Privado": "💼 Privado" };
+// Segmento de una gestión (las viejas traen canal + sector: se traducen)
+function segDe(g) { return segmentoDeRegistro(g); }
 const NEGOCIOS = ["Venta", "Renta"];
 // Indicadores del histórico: clave → { etiqueta, cálculo sobre una lista de gestiones }
 const INDICADORES = {
   total:   { t: "Gestiones totales",   f: l => l.length },
   com:     { t: "Comerciales",         f: l => l.filter(g => g.tipo === "Comercial").length },
   ope:     { t: "Operativas",          f: l => l.filter(g => g.tipo === "Operativo").length },
-  cta:     { t: "Cuentas únicas",      f: l => new Set(l.map(g => normNombre(g.cuenta)).filter(Boolean)).size },
+  cta:     { t: "Cuentas únicas",      f: l => new Set(l.filter(g => String(g.cuenta || "").trim()).map(g => claveCuenta(g.cuenta))).size },
   nue:     { t: "Clientes nuevos",     f: l => l.filter(g => g.tipoCliente === "Nuevo").length },
   pre:     { t: "Reuniones presenciales", f: l => l.filter(g => g.modalidad === "Presencial").length },
   venta:   { t: "Gestiones de venta",  f: l => l.filter(g => g.negocio === "Venta").length },
   renta:   { t: "Gestiones de renta",  f: l => l.filter(g => g.negocio === "Renta").length },
-  pub:     { t: "Sector público",      f: l => l.filter(g => g.sector === "Público").length }
+  pub:     { t: "Segmento público",    f: l => l.filter(g => segDe(g) === "Público").length }
 };
 const DIAS_NOMBRE = ["lunes","martes","miércoles","jueves","viernes","sábado","domingo"];
 
@@ -121,7 +130,7 @@ let gestiones = [];
 let deals = [];
 let fichas = [];          // colección `cuentas`
 let cuentasSprint = [];   // base instalada (para contactos y existencia)
-let parar = null, pararDeals = null, pararFichas = null, pararSprint = null;
+let parar = null, pararDeals = null, pararFichas = null, pararSprint = null, pararCat = null;
 // Estado del bloque de cuenta en el modal
 let modoCuenta = "existente";   // "existente" | "nueva"
 let cuentaOriginal = "";        // cuenta de la gestión en edición
@@ -136,7 +145,7 @@ let semRep = "", semTipo = "", semMod = "";
 let cmpA = "", cmpB = "";
 let eqMes = "";
 let mesInicializado = false;
-const filtros = { texto: "", rep: "", tipo: "", etapa: "", mes: "", tipoCliente: "", canal: "", modalidad: "", negocio: "", sector: "" };
+const filtros = { texto: "", rep: "", tipo: "", etapa: "", mes: "", tipoCliente: "", segmento: "", modalidad: "", negocio: "" };
 
 // ── Utilidades ──
 const $ = (id) => document.getElementById(id);
@@ -223,8 +232,7 @@ function itemHtml(g) {
           ${chip(g.tipo, g.tipo === "Comercial" ? "#EFF6FF" : "#F3F4F6", g.tipo === "Comercial" ? "#1d4ed8" : "#374151")}
           ${chip(etapaDe(g), "#EDE9FE", "#6d28d9")}
           ${chip(g.negocio, g.negocio === "Renta" ? "#E0E7FF" : "#DCFCE7", g.negocio === "Renta" ? "#4338ca" : "#15803d")}
-          ${chip(g.canal, "#F3F4F6", "#374151")}
-          ${chip(g.sector ? (g.sector === "Público" ? "🏛 Público" : "💼 Privado") : "", "#F3F4F6", "#374151")}
+          ${chip(segDe(g) ? SEGMENTO_TXT[segDe(g)] : "", "#F3F4F6", "#374151")}
           ${chip(g.modalidad, "#FEF3C7", "#b45309")}
           ${chip(g.tipoCliente === "Nuevo" ? "✨ Nuevo" : "", "#CCFBF1", "#0f766e")}
           ${chip(g.dealId ? "🔗 Pipeline" : "", "#EFF6FF", "#1d4ed8")}
@@ -281,6 +289,9 @@ export function iniciarAgenda() {
     (lista) => { fichas = lista; refrescarCuentas(); },
     () => { console.warn("No se pudo leer la colección cuentas: revisa las reglas de Firestore."); }
   );
+  // Catálogo compartido (brokers para la oportunidad nueva)
+  if (pararCat) pararCat();
+  pararCat = alCambiarCatalogo(() => {});
   if (pararSprint) pararSprint();
   pararSprint = suscribirCuentasSprint(
     (lista) => { cuentasSprint = lista; refrescarCuentas(); },
@@ -293,6 +304,7 @@ export function detenerAgenda() {
   if (pararDeals) { pararDeals(); pararDeals = null; }
   if (pararFichas) { pararFichas(); pararFichas = null; }
   if (pararSprint) { pararSprint(); pararSprint = null; }
+  if (pararCat) { pararCat(); pararCat = null; }
   Object.keys(charts).forEach(k => { charts[k].destroy(); delete charts[k]; });
   gestiones = [];
   deals = [];
@@ -494,10 +506,9 @@ function pintarEstructura() {
           <option>Comercial</option>
           <option>Operativo</option>
         </select>
-        <select class="filtro-select" id="ag-f-canal">
-          <option value="">Canal: Todos</option>
-          <option>Retail</option>
-          <option>Corporativo</option>
+        <select class="filtro-select" id="ag-f-segmento">
+          <option value="">Segmento: Todos</option>
+          ${SEGMENTOS.map(x => `<option>${x}</option>`).join("")}
         </select>
         <select class="filtro-select" id="ag-f-negocio">
           <option value="">Modalidad: Todas</option>
@@ -508,11 +519,6 @@ function pintarEstructura() {
           <option value="">Reunión: Todas</option>
           <option>Virtual</option>
           <option>Presencial</option>
-        </select>
-        <select class="filtro-select" id="ag-f-sector">
-          <option value="">Sector: Todos</option>
-          <option>Público</option>
-          <option>Privado</option>
         </select>
         <select class="filtro-select" id="ag-f-etapa"><option value="">Etapa: Todas</option>
           ${ETAPAS.map(e => `<option>${e}</option>`).join("")}
@@ -590,16 +596,10 @@ function pintarEstructura() {
               <datalist id="ag-dl-cuenta"></datalist>
               <div class="cta-res" id="ag-cta-res"></div>
               <div class="form-grid" id="ag-cta-campos" style="margin-top:10px;display:none">
-                <div class="form-group" id="ag-canal-wrap"><label class="form-label">Canal *</label>
-                  <select class="form-select" id="ag-c-canal">
+                <div class="form-group" id="ag-seg-wrap"><label class="form-label">Segmento *</label>
+                  <select class="form-select" id="ag-c-segmento">
                     <option value="">— Selecciona —</option>
-                    <option value="Retail">🏪 Retail</option>
-                    <option value="Corporativo">🏢 Corporativo</option>
-                  </select></div>
-                <div class="form-group" id="ag-sector-wrap"><label class="form-label">Sector *</label>
-                  <select class="form-select" id="ag-c-sector">
-                    <option value="">— Selecciona —</option>
-                    ${SECTORES.map(x => `<option value="${x}">${SECTOR_TXT[x]}</option>`).join("")}
+                    ${SEGMENTOS.map(x => `<option value="${x}">${SEGMENTO_TXT[x]}</option>`).join("")}
                   </select></div>
               </div>
               <div class="cta-sub" id="ag-cta-sub"></div>
@@ -662,6 +662,15 @@ function pintarEstructura() {
                     </select></div>
                   <div class="form-group"><label class="form-label">Valor (COP)</label>
                     <input class="form-input" id="ag-c-deal-valor" type="number" min="0" placeholder="0"/></div>
+                </div>
+                <div class="form-grid" id="ag-link-nueva" style="display:none;margin-top:10px">
+                  <div class="form-group"><label class="form-label">Canal *</label>
+                    <select class="form-select" id="ag-c-deal-canal"><option value="">— Selecciona —</option>${CANALES.map(c => `<option>${c}</option>`).join("")}</select></div>
+                  <div class="form-group"><label class="form-label">Origen *</label>
+                    <select class="form-select" id="ag-c-deal-origen"></select></div>
+                  <div class="form-group full" id="ag-deal-brk-wrap" style="display:none"><label class="form-label">Broker *</label>
+                    <select class="form-select" id="ag-c-deal-broker"></select>
+                    <div class="link-nota">¿No está? Créalo en Pipeline → 🤝 Brokers o en el formulario de oportunidad.</div></div>
                 </div>
                 <div class="link-nota" id="ag-link-nota"></div>
               </div>
@@ -741,6 +750,7 @@ function pintarEstructura() {
   $("ag-c-etapa").addEventListener("change", sugerirEstadoDesdeEtapa);
   $("ag-c-sprint").addEventListener("change", alCambiarSprint);
   $("ag-c-deal").addEventListener("change", alCambiarDeal);
+  $("ag-c-deal-canal").addEventListener("change", alCambiarCanalDeal);
   // Cuenta existente / nueva + contacto
   $("ag-cta-modo-ex").addEventListener("click", () => ponerModoCuenta("existente"));
   $("ag-cta-modo-nu").addEventListener("click", () => ponerModoCuenta("nueva"));
@@ -749,13 +759,13 @@ function pintarEstructura() {
 
   // Filtros del mensual
   $("ag-f-texto").addEventListener("input", (e) => { filtros.texto = e.target.value.toLowerCase(); renderMensual(); });
-  [["ag-f-mes","mes"],["ag-f-rep","rep"],["ag-f-tipo","tipo"],["ag-f-etapa","etapa"],["ag-f-canal","canal"],["ag-f-modalidad","modalidad"],["ag-f-negocio","negocio"],["ag-f-sector","sector"]].forEach(([id, clave]) => {
+  [["ag-f-mes","mes"],["ag-f-rep","rep"],["ag-f-tipo","tipo"],["ag-f-etapa","etapa"],["ag-f-segmento","segmento"],["ag-f-modalidad","modalidad"],["ag-f-negocio","negocio"]].forEach(([id, clave]) => {
     $(id).addEventListener("change", (e) => { filtros[clave] = e.target.value; renderMensual(); });
   });
   $("ag-f-limpiar").addEventListener("click", () => {
     Object.keys(filtros).forEach(k => filtros[k] = "");
     $("ag-f-texto").value = "";
-    ["ag-f-mes","ag-f-rep","ag-f-tipo","ag-f-etapa","ag-f-canal","ag-f-modalidad","ag-f-negocio","ag-f-sector"].forEach(id => $(id).value = "");
+    ["ag-f-mes","ag-f-rep","ag-f-tipo","ag-f-etapa","ag-f-segmento","ag-f-modalidad","ag-f-negocio"].forEach(id => $(id).value = "");
     renderMensual();
   });
   $("ag-btn-csv").addEventListener("click", exportarCSVAgenda);
@@ -870,8 +880,11 @@ function alCambiarDeal() {
   if (!val) { campos.style.display = "none"; return; }
   campos.style.display = "block";
 
+  $("ag-link-nueva").style.display = val === "__nueva__" ? "grid" : "none";
   if (val === "__nueva__") {
     $("ag-c-deal-valor").value = "";
+    $("ag-c-deal-canal").value = "";
+    alCambiarCanalDeal();
     sugerirEstadoDesdeEtapa();
     nota.textContent = "Se creará en el pipeline usando la Cuenta y la Oportunidad de esta gestión.";
   } else {
@@ -883,6 +896,20 @@ function alCambiarDeal() {
       nota.textContent = `La cuenta "${d.cuenta}" se mantiene. Se actualizarán el estado y el valor de la oportunidad.`;
     }
   }
+}
+
+// Oportunidad nueva desde la agenda: canal → origen (Directo) o broker (Indirecto)
+function alCambiarCanalDeal() {
+  const canal = $("ag-c-deal-canal").value;
+  const sel = $("ag-c-deal-origen");
+  if (canal === "Indirecto") { sel.innerHTML = `<option value="${ORIGEN_INDIRECTO}">🤝 ${ORIGEN_INDIRECTO}</option>`; sel.disabled = true; }
+  else if (canal === "Directo") { sel.disabled = false; sel.innerHTML = `<option value="">— Selecciona —</option>` + ORIGENES_DIRECTO.map(o => `<option>${o}</option>`).join(""); }
+  else { sel.disabled = true; sel.innerHTML = `<option value="">Elige primero el canal</option>`; }
+  $("ag-deal-brk-wrap").style.display = canal === "Indirecto" ? "flex" : "none";
+  const bs = $("ag-c-deal-broker");
+  const lista = listaBrokers();
+  bs.innerHTML = `<option value="">${lista.length ? "— Selecciona el broker —" : "— Aún no hay brokers creados —"}</option>` +
+    lista.map(b => `<option value="${esc(b.nombre)}">${esc(b.nombre)}</option>`).join("");
 }
 
 function sugerirEstadoDesdeEtapa() {
@@ -903,18 +930,6 @@ function sugerirEstadoDesdeEtapa() {
 // ═══════════════════════════════════════════
 let indice = new Map();
 
-function normSeg(v) {
-  const t = String(v || "").trim().toLowerCase();
-  if (t === "retail") return "Retail";
-  if (t === "corporativo") return "Corporativo";
-  return "";
-}
-function normSector(v) {
-  const t = normNombre(v);
-  if (t.startsWith("pub") || t.startsWith("gob")) return "Público";
-  if (t.startsWith("priv")) return "Privado";
-  return "";
-}
 
 function construirIndice() {
   const m = new Map();
@@ -922,8 +937,10 @@ function construirIndice() {
     const n = String(nombre || "").trim();
     if (!n) return null;
     const k = idCuenta(n);
-    if (!m.has(k)) m.set(k, { clave: k, nombre: n, fichaId: null, canal: "", sector: "", contactos: [], nGestiones: 0, ultima: "", enPipeline: false, enSprint: false });
-    return m.get(k);
+    if (!m.has(k)) m.set(k, { clave: k, nombre: n, variantes: {}, fichaId: null, ficha: null, segmento: "", contactos: [], nGestiones: 0, ultima: "", enPipeline: false, enSprint: false });
+    const c = m.get(k);
+    c.variantes[n] = (c.variantes[n] || 0) + 1;
+    return c;
   };
   const sumarContacto = (c, ct) => {
     const nom = String(ct?.nombre || "").trim();
@@ -936,14 +953,12 @@ function construirIndice() {
     c.contactos.push({ nombre: nom, cargo: ct.cargo || "", correo: ct.correo || "", telefono: ct.telefono || "", fecha: ct.fecha || "" });
   };
 
-  // 1. Fichas (mandan sobre el nombre oficial, canal y sector)
+  // 1. Fichas (mandan sobre el nombre oficial y el segmento)
   fichas.forEach(f => {
     const c = tomar(f.nombre || f.id);
     if (!c) return;
-    c.nombre = f.nombre || c.nombre;
-    c.fichaId = f.id;
-    c.canal = normSeg(f.canal);
-    c.sector = normSector(f.sector);
+    if (!c.fichaId || f.id === c.clave) { c.fichaId = f.id; c.ficha = f; }
+    if (!c.segmento) c.segmento = segmentoDeRegistro(f);
     [...(f.contactos || [])].sort((a, b) => String(b.fecha || "").localeCompare(String(a.fecha || ""))).forEach(ct => sumarContacto(c, ct));
   });
   // 2. Gestiones (de la más reciente a la más antigua)
@@ -952,8 +967,7 @@ function construirIndice() {
     if (!c) return;
     c.nGestiones++;
     if (!c.ultima) c.ultima = g.fecha || "";
-    if (!c.canal) c.canal = normSeg(g.canal);
-    if (!c.sector) c.sector = normSector(g.sector);
+    if (!c.segmento) c.segmento = segDe(g);
     if (g.contactoNombre) sumarContacto(c, { nombre: g.contactoNombre, cargo: g.contactoCargo, correo: g.contactoCorreo, telefono: g.contactoTelefono, fecha: g.fecha });
   });
   // 3. Pipeline
@@ -961,7 +975,7 @@ function construirIndice() {
     const c = tomar(d.cuenta);
     if (!c) return;
     c.enPipeline = true;
-    if (!c.canal) c.canal = normSeg(d.segmento) || normSeg(d.canal);
+    if (!c.segmento) c.segmento = normSegmento(d.segmento) || normSegmento(d.canal);
   });
   // 4. Base instalada del sprint
   cuentasSprint.forEach(cs => {
@@ -970,6 +984,8 @@ function construirIndice() {
     c.enSprint = true;
     if (cs.contactoNombre) sumarContacto(c, { nombre: cs.contactoNombre, cargo: cs.contactoCargo, correo: cs.contactoCorreo, telefono: cs.contactoTelefono });
   });
+  // Nombre oficial: el de la ficha; si no, la escritura más usada
+  m.forEach(c => { c.nombre = c.ficha?.nombre || nombrePreferido(c.variantes); });
   indice = m;
 }
 
@@ -991,7 +1007,7 @@ function ponerModoCuenta(modo) {
   $("ag-cta-modo-nu").classList.toggle("on", modo === "nueva");
   $("ag-c-cuenta").placeholder = modo === "existente" ? "Escribe para buscar la cuenta…" : "Nombre de la cuenta nueva";
   $("ag-c-cuenta").setAttribute("list", modo === "existente" ? "ag-dl-cuenta" : "");
-  if (modo === "nueva") { $("ag-c-canal").value = ""; $("ag-c-sector").value = ""; }
+  if (modo === "nueva") $("ag-c-segmento").value = "";
   alCambiarCuenta();
   $("ag-c-cuenta").focus();
 }
@@ -1001,13 +1017,12 @@ function alCambiarCuenta(conservar) {
   const nombre = $("ag-c-cuenta").value.trim();
   const info = infoCuenta(nombre);
   const res = $("ag-cta-res"), campos = $("ag-cta-campos"), sub = $("ag-cta-sub");
-  let mostrarCanal = false, mostrarSector = false, mostrarContactos = false;
+  let mostrarSeg = false, mostrarContactos = false;
   sub.textContent = "";
 
   const chips = (c, tipoCli) => [
     chip(tipoCli === "Nuevo" ? "✨ Cliente nuevo" : "🔁 Cliente existente", tipoCli === "Nuevo" ? "#CCFBF1" : "#EFF6FF", tipoCli === "Nuevo" ? "#0f766e" : "#1d4ed8"),
-    c?.canal ? chip(c.canal === "Retail" ? "🏪 Retail" : "🏢 Corporativo", "#F3F4F6", "#374151") : "",
-    c?.sector ? chip(SECTOR_TXT[c.sector], "#F3F4F6", "#374151") : "",
+    c?.segmento ? chip(SEGMENTO_TXT[c.segmento], "#F3F4F6", "#374151") : "",
     c?.nGestiones ? `<span class="hist-meta">${c.nGestiones} gestión(es)${c.ultima ? " · última " + esc(c.ultima) : ""}</span>` : "",
     c?.enPipeline ? chip("🔗 En pipeline", "#EFF6FF", "#1d4ed8") : "",
     c?.enSprint ? chip("🚀 Base instalada", "#FEF3C7", "#92400e") : ""
@@ -1018,8 +1033,8 @@ function alCambiarCuenta(conservar) {
       res.innerHTML = `<span class="hist-meta">Escribe el nombre y elige la cuenta de la lista. Si no aparece, usa “✨ Registrar nueva”.</span>`;
     } else if (info) {
       res.innerHTML = `<span class="ok">✓ ${esc(info.nombre)}</span>` + chips(info, "Existente");
-      mostrarCanal = !info.canal; mostrarSector = !info.sector; mostrarContactos = true;
-      if (mostrarCanal || mostrarSector) sub.textContent = "Falta un dato de esta cuenta: complétalo una vez y quedará guardado en su ficha.";
+      mostrarSeg = !info.segmento; mostrarContactos = true;
+      if (mostrarSeg) sub.textContent = "Falta el segmento de esta cuenta: complétalo una vez y quedará guardado en su ficha.";
     } else {
       res.innerHTML = `<span class="warn">⚠ No encontramos “${esc(nombre)}”.</span><button type="button" id="ag-cta-anueva">✨ Registrarla como nueva</button>`;
       $("ag-cta-anueva").addEventListener("click", () => ponerModoCuenta("nueva"));
@@ -1029,13 +1044,17 @@ function alCambiarCuenta(conservar) {
       res.innerHTML = `<span class="warn">⚠ “${esc(info.nombre)}” ya existe.</span><button type="button" id="ag-cta-aex">Usar la cuenta existente</button>`;
       $("ag-cta-aex").addEventListener("click", () => { $("ag-c-cuenta").value = info.nombre; ponerModoCuenta("existente"); });
     } else {
-      res.innerHTML = nombre.length >= 2 ? chips(null, "Nuevo") : `<span class="hist-meta">Escribe el nombre de la cuenta nueva y su canal y sector.</span>`;
-      mostrarCanal = true; mostrarSector = true; mostrarContactos = nombre.length >= 2;
+      res.innerHTML = nombre.length >= 2 ? chips(null, "Nuevo") : `<span class="hist-meta">Escribe el nombre de la cuenta nueva y su segmento.</span>`;
+      // Posibles duplicados con otro nombre (ej. "Provet" vs "Laboratorios Provet")
+      const parecidas = nombre.length >= 3 ? [...indice.values()].filter(x => parecidoCuentas(nombre, x.nombre) >= 0.6).slice(0, 3) : [];
+      if (parecidas.length) {
+        res.innerHTML += `<span class="warn">¿Es alguna de estas?</span>` + parecidas.map(x => `<button type="button" data-usar="${esc(x.nombre)}">${esc(x.nombre)}</button>`).join("");
+        res.querySelectorAll("[data-usar]").forEach(b => b.addEventListener("click", () => { $("ag-c-cuenta").value = b.dataset.usar; ponerModoCuenta("existente"); }));
+      }
+      mostrarSeg = true; mostrarContactos = nombre.length >= 2;
     }
   }
-  campos.style.display = (mostrarCanal || mostrarSector) ? "grid" : "none";
-  $("ag-canal-wrap").style.display = mostrarCanal ? "flex" : "none";
-  $("ag-sector-wrap").style.display = mostrarSector ? "flex" : "none";
+  campos.style.display = mostrarSeg ? "grid" : "none";
   $("ag-ct-wrap").style.display = mostrarContactos ? "block" : "none";
   if (!conservar) poblarContactos(info && modoCuenta === "existente" ? info : null);
   renderHistorialCuenta(info && modoCuenta === "existente" ? info.clave : "");
@@ -1194,10 +1213,10 @@ function renderMiAgenda() {
   $("mia-btn-nueva").addEventListener("click", () => abrirModal(null));
   const irMensual = (tipo, tipoCliente) => {
     filtros.mes = mesClave; filtros.tipo = tipo || ""; filtros.tipoCliente = tipoCliente || "";
-    filtros.etapa = ""; filtros.texto = ""; filtros.canal = ""; filtros.modalidad = "";
+    filtros.etapa = ""; filtros.texto = ""; filtros.segmento = ""; filtros.modalidad = ""; filtros.negocio = "";
     $("ag-f-mes").value = mesClave; $("ag-f-tipo").value = filtros.tipo;
     $("ag-f-etapa").value = ""; $("ag-f-texto").value = "";
-    $("ag-f-canal").value = ""; $("ag-f-modalidad").value = "";
+    $("ag-f-segmento").value = ""; $("ag-f-modalidad").value = ""; $("ag-f-negocio").value = "";
     renderMensual();
     mostrarSub("mes");
   };
@@ -1295,11 +1314,11 @@ function renderEquipo() {
     filtros.rep = nombre;
     filtros.mes = eqMes;
     filtros.tipo = ""; filtros.etapa = ""; filtros.tipoCliente = ""; filtros.texto = "";
-    filtros.canal = ""; filtros.modalidad = "";
+    filtros.segmento = ""; filtros.modalidad = ""; filtros.negocio = "";
     $("ag-f-rep").value = filtros.rep;
     $("ag-f-mes").value = filtros.mes;
     $("ag-f-tipo").value = ""; $("ag-f-etapa").value = ""; $("ag-f-texto").value = "";
-    $("ag-f-canal").value = ""; $("ag-f-modalidad").value = "";
+    $("ag-f-segmento").value = ""; $("ag-f-modalidad").value = ""; $("ag-f-negocio").value = "";
     renderMensual();
     mostrarSub("mes");
   };
@@ -1437,10 +1456,9 @@ function filtrarMensual(mesForzado) {
     if (mes && mesDe(g) !== mes) return false;
     if (filtros.rep && g.rep !== filtros.rep) return false;
     if (filtros.tipo && g.tipo !== filtros.tipo) return false;
-    if (filtros.canal && g.canal !== filtros.canal) return false;
+    if (filtros.segmento && segDe(g) !== filtros.segmento) return false;
     if (filtros.modalidad && g.modalidad !== filtros.modalidad) return false;
     if (filtros.negocio && g.negocio !== filtros.negocio) return false;
-    if (filtros.sector && g.sector !== filtros.sector) return false;
     if (filtros.etapa && etapaDe(g) !== filtros.etapa) return false;
     if (filtros.tipoCliente && g.tipoCliente !== filtros.tipoCliente) return false;
     if (filtros.texto) {
@@ -1453,10 +1471,11 @@ function filtrarMensual(mesForzado) {
 
 // Exporta a CSV las gestiones visibles con los filtros del reporte mensual
 function exportarCSVAgenda() {
-  const cols = ["fecha","hora","rep","cuenta","oportunidad","tipo","etapa","negocio","tipoCliente","canal","sector","modalidad","contactoNombre","contactoCargo","contactoCorreo","contactoTelefono","ciudad","notas","dealId"];
+  const cols = ["fecha","hora","rep","cuenta","oportunidad","tipo","etapa","negocio","tipoCliente","segmento","modalidad","contactoNombre","contactoCargo","contactoCorreo","contactoTelefono","ciudad","notas","dealId"];
   const celda = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
   const filas = filtrarMensual().map(g => cols.map(k => {
     if (k === "etapa") return etapaDe(g);
+    if (k === "segmento") return segDe(g);
     return g[k] ?? "";
   }).map(celda).join(";"));
   const csv = "\ufeff" + [cols.join(";"), ...filas].join("\n");
@@ -1497,8 +1516,7 @@ const DIM_COMP = [
   { fila: "Modalidad", clave: "negocio", campo: g => g.negocio, ops: [["Venta", "#16a34a"], ["Renta", "#4f46e5"]] },
   { fila: "Reunión", clave: "modalidad", campo: g => g.modalidad, ops: [["Presencial", "#d97706"], ["Virtual", "#0d9488"]] },
   { fila: "Cliente", clave: "tipoCliente", campo: g => g.tipoCliente, ops: [["Nuevo", "#7c3aed"], ["Existente", "#60a5fa"]] },
-  { fila: "Canal", clave: "canal", campo: g => normSeg(g.canal), ops: [["Corporativo", "#1e3a8a"], ["Retail", "#f59e0b"]] },
-  { fila: "Sector", clave: "sector", campo: g => g.sector, ops: [["Privado", "#0f766e"], ["Público", "#dc2626"]] }
+  { fila: "Segmento", clave: "segmento", campo: g => segDe(g), ops: [["Corporativo", "#1e3a8a"], ["Retail", "#f59e0b"], ["Público", "#dc2626"]] }
 ];
 const SIN_DATO = "#e5e5e0";
 function renderComposicion(lista) {
@@ -1553,7 +1571,7 @@ function renderComposicion(lista) {
         if (!ds.dim) return;
         const clave = ds.dim.clave, val = ds.label;
         filtros[clave] = filtros[clave] === val ? "" : val;
-        const sel = { tipo: "ag-f-tipo", negocio: "ag-f-negocio", modalidad: "ag-f-modalidad", canal: "ag-f-canal", sector: "ag-f-sector" }[clave];
+        const sel = { tipo: "ag-f-tipo", negocio: "ag-f-negocio", modalidad: "ag-f-modalidad", segmento: "ag-f-segmento" }[clave];
         if (sel) $(sel).value = filtros[clave];
         renderMensual();
       },
@@ -1614,8 +1632,8 @@ function renderMensual() {
   `;
   $("mc-todas").addEventListener("click", () => {
     filtros.tipo = ""; filtros.tipoCliente = ""; filtros.etapa = ""; filtros.rep = "";
-    filtros.canal = ""; filtros.modalidad = ""; filtros.negocio = ""; filtros.sector = "";
-    ["ag-f-tipo","ag-f-etapa","ag-f-rep","ag-f-canal","ag-f-modalidad","ag-f-negocio","ag-f-sector"].forEach(id => $(id).value = "");
+    filtros.segmento = ""; filtros.modalidad = ""; filtros.negocio = "";
+    ["ag-f-tipo","ag-f-etapa","ag-f-rep","ag-f-segmento","ag-f-modalidad","ag-f-negocio"].forEach(id => $(id).value = "");
     renderMensual();
   });
   $("mc-com").addEventListener("click", () => {
@@ -1923,8 +1941,7 @@ function abrirModal(g) {
   $("ag-c-hora").value = g?.hora || `${pad(hoy.getHours())}:${pad(hoy.getMinutes())}`;
   $("ag-c-cuenta").value = g?.cuenta || "";
   $("ag-c-oportunidad").value = g?.oportunidad || "";
-  $("ag-c-canal").value = normSeg(g?.canal);
-  $("ag-c-sector").value = normSector(g?.sector);
+  $("ag-c-segmento").value = g ? segDe(g) : "";
   $("ag-c-negocio").value = NEGOCIOS.includes(g?.negocio) ? g.negocio : "";
   $("ag-c-modalidad").value = g?.modalidad || "";
   // Cuenta: al editar siempre es una cuenta existente
@@ -2031,8 +2048,7 @@ async function guardar() {
     return;
   }
   const cuenta = info ? info.nombre : escrita;
-  const canal = (info && info.canal) || $("ag-c-canal").value;
-  const sector = (info && info.sector) || $("ag-c-sector").value;
+  const segmento = (info && info.segmento) || $("ag-c-segmento").value;
   // Tipo de cliente automático: cuenta nueva → Nuevo; existente → Existente.
   // Al editar sin cambiar de cuenta se respeta lo que ya tenía.
   const tipoCliente = (editandoId && tipoClienteOriginal && idCuenta(cuentaOriginal) === idCuenta(cuenta))
@@ -2045,8 +2061,8 @@ async function guardar() {
     err.textContent = "Completa todos los campos obligatorios (*).";
     return;
   }
-  if (!canal || !sector) {
-    err.textContent = "Indica el canal y el sector (público o privado) de la cuenta.";
+  if (!segmento) {
+    err.textContent = "Indica el segmento de la cuenta (Retail, Corporativo o Público).";
     return;
   }
   if (tipo === "Comercial" && !etapa) {
@@ -2070,13 +2086,23 @@ async function guardar() {
         btn.disabled = false; btn.textContent = "💾 Guardar gestión";
         return;
       }
+      const dCanal = $("ag-c-deal-canal").value;
+      const dOrigen = dCanal === "Indirecto" ? ORIGEN_INDIRECTO : $("ag-c-deal-origen").value;
+      const dBroker = dCanal === "Indirecto" ? brokerDe($("ag-c-deal-broker").value) : null;
+      if (!dCanal || !dOrigen || (dCanal === "Indirecto" && !dBroker)) {
+        err.textContent = "Para la oportunidad nueva elige Canal y Origen" + (dCanal === "Indirecto" ? " y el Broker." : ".");
+        btn.disabled = false; btn.textContent = "💾 Guardar gestión";
+        return;
+      }
       const anioGestion = parseInt(String(fecha).slice(0, 4), 10);
       const pe = probYEsperado(estado, valor, 0.5);
       const resDeal = await crearDeal({
         oportunidad, cuenta, rep, estado, valor,
         prob: pe.prob, esperado: pe.esperado,
         anio_radicacion: isNaN(anioGestion) ? new Date().getFullYear() : anioGestion,
-        canal: "", segmento: canal, origen: "Agenda Comercial", comentarios: "Creada desde una gestión de la agenda"
+        cuentaId: claveCuenta(cuenta), tipo: negocio, segmento, canal: dCanal, origen: dOrigen,
+        broker: dBroker ? dBroker.nombre : "", brokerId: dBroker ? claveCuenta(dBroker.nombre) : "",
+        comentarios: "Creada desde una gestión de la agenda"
       });
       if (!resDeal.ok) {
         err.textContent = "No se pudo crear la oportunidad: " + resDeal.error;
@@ -2123,14 +2149,13 @@ async function guardar() {
     const nuevoCt = ct.esNuevo ? { ...ct.contacto, creadoPor: rep, fecha: hoyIso } : null;
     if (!info || !info.fichaId) {
       const rf = await crearCuenta(cuentaId, {
-        nombre: cuenta, canal, sector, contactos: nuevoCt ? [nuevoCt] : [],
+        nombre: cuenta, segmento, contactos: nuevoCt ? [nuevoCt] : [],
         creadoPor: rep, origen: modoCuenta === "nueva" ? "Agenda · cuenta nueva" : "Agenda · cuenta histórica"
       });
       if (!rf.ok) avisoFicha = rf.error;
     } else {
       const cambios = {};
-      if (!fichas.find(f => f.id === info.fichaId)?.canal) cambios.canal = canal;
-      if (!fichas.find(f => f.id === info.fichaId)?.sector) cambios.sector = sector;
+      if (!normSegmento(fichas.find(f => f.id === info.fichaId)?.segmento)) cambios.segmento = segmento;
       if (Object.keys(cambios).length) {
         const rf = await actualizarCuenta(info.fichaId, cambios);
         if (!rf.ok) avisoFicha = rf.error;
@@ -2145,8 +2170,8 @@ async function guardar() {
     // ── Guardar la gestión (con la referencia a la oportunidad) ──
     const c = ct.contacto || {};
     const datos = {
-      rep, ciudad, fecha, cuenta, oportunidad, tipoCliente, canal, modalidad, tipo,
-      negocio, sector, cuentaId,
+      rep, ciudad, fecha, cuenta, oportunidad, tipoCliente, modalidad, tipo,
+      negocio, segmento, cuentaId,
       contactoNombre: c.nombre || "", contactoCargo: c.cargo || "",
       contactoCorreo: c.correo || "", contactoTelefono: c.telefono || "",
       hora: $("ag-c-hora").value,

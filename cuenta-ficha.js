@@ -2,7 +2,9 @@
 // cuenta-ficha.js — v1.0 (nov 2026)
 // 📇 FICHA 360 DE UNA CUENTA: panel lateral con todo lo que se
 // sabe de un cliente, juntando las 4 fuentes del CRM:
-//   · cuentas        → ficha (canal, sector, contactos)
+//   · cuentas        → ficha (segmento, contactos)
+// v1.1 (nov 2026): segmento único Retail/Corporativo/Público, broker en
+//   cada oportunidad y nombre oficial aunque la cuenta esté escrita distinto.
 //   · deals          → oportunidades de TODOS los años y reps
 //   · gestiones      → actividad y notas de la Agenda
 //   · cuentasSprint  → datos de base instalada (Sprint)
@@ -29,6 +31,7 @@ import {
   suscribirGestiones, suscribirDeals, suscribirCuentas, suscribirCuentasSprint,
   crearCuenta, actualizarCuenta, agregarContactoCuenta, idCuenta
 } from "./firestore-service.js";
+import { SEGMENTOS, SEGMENTO_TXT, segmentoDeRegistro, normSegmento, nombrePreferido, canalDeDeal, origenDeDeal } from "./catalogos.js";
 
 // ── Constantes ──
 const ACTIVOS = new Set(["Identificado", "Cotizado", "En diseño", "Negociación"]);
@@ -43,7 +46,6 @@ const EST_STYLE = {
 };
 const MESES = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
 const REPS_EXCLUIDOS = ["elizabeth"];
-const SECTOR_TXT = { "Público": "🏛 Público (gobierno)", "Privado": "💼 Privado" };
 
 // ── Estado ──
 let gestiones = [], deals = [], fichas = [], sprint = [];
@@ -109,16 +111,6 @@ function esperadoDe(d) {
   if (d.estado === "Perdido") return 0;
   const e = parseFloat(d.esperado);
   return isNaN(e) ? Math.round(v * (parseFloat(d.prob) || 0)) : e;
-}
-function normSeg(v) {
-  const t = norm(v);
-  return t === "retail" ? "Retail" : t === "corporativo" ? "Corporativo" : "";
-}
-function normSector(v) {
-  const t = norm(v);
-  if (t.startsWith("pub") || t.startsWith("gob")) return "Público";
-  if (t.startsWith("priv")) return "Privado";
-  return "";
 }
 function excluido(rep) { return REPS_EXCLUIDOS.includes(norm(rep).split(/\s+/)[0]); }
 let toastTimer = null;
@@ -187,12 +179,14 @@ function datosCuenta(clave) {
     .sort((a, b) => (String(b.fecha || "") + String(b.hora || "")).localeCompare(String(a.fecha || "") + String(a.hora || "")));
   const ds = deals.filter(d => idCuenta(d.cuenta) === clave);
   const sp = sprint.find(s => idCuenta(s.cuenta) === clave) || null;
-  const nombre = ficha?.nombre || ds[0]?.cuenta || gs[0]?.cuenta || sp?.cuenta || "";
+  const variantes = {};
+  [...ds.map(d => d.cuenta), ...gs.map(g => g.cuenta), sp?.cuenta].forEach(n => { const t = String(n || "").trim(); if (t) variantes[t] = (variantes[t] || 0) + 1; });
+  const nombre = ficha?.nombre || nombrePreferido(variantes);
 
-  // Canal / sector: ficha → gestión más reciente → pipeline
-  let canal = normSeg(ficha?.canal), sector = normSector(ficha?.sector);
-  for (const g of gs) { if (!canal) canal = normSeg(g.canal); if (!sector) sector = normSector(g.sector); }
-  for (const d of ds) { if (!canal) canal = normSeg(d.segmento) || normSeg(d.canal); }
+  // Segmento: ficha → gestión más reciente → pipeline
+  let segmento = segmentoDeRegistro(ficha);
+  for (const g of gs) { if (!segmento) segmento = segmentoDeRegistro(g); }
+  for (const d of ds) { if (!segmento) segmento = normSegmento(d.segmento) || normSegmento(d.canal); }
 
   // Contactos sin repetir, con la última vez que se usaron
   const contactos = [];
@@ -214,7 +208,7 @@ function datosCuenta(clave) {
   if (sp?.contactoNombre) sumar({ nombre: sp.contactoNombre, cargo: sp.contactoCargo, correo: sp.contactoCorreo, telefono: sp.contactoTelefono }, "Base instalada");
 
   const reps = [...new Set([...ds.map(d => d.rep), ...gs.map(g => g.rep)].filter(r => r && !excluido(r)))];
-  return { clave, nombre, ficha, gs, ds, sp, canal, sector, contactos, reps };
+  return { clave, nombre, ficha, gs, ds, sp, segmento, contactos, reps };
 }
 
 // ═══════════════════════════════════════════
@@ -352,8 +346,7 @@ function renderHeader(c) {
         <div style="font-size:11px;opacity:.75;font-weight:600;letter-spacing:.04em">📇 FICHA DE CUENTA</div>
         <h3 id="cf-nombre">${esc(c.nombre)}</h3>
         <div class="cf-chips">
-          ${c.canal ? badge(c.canal === "Retail" ? "🏪 Retail" : "🏢 Corporativo") : ""}
-          ${c.sector ? badge(SECTOR_TXT[c.sector]) : ""}
+          ${c.segmento ? badge(SEGMENTO_TXT[c.segmento]) : ""}
           ${ganadas ? badge("🏆 Cliente con negocios ganados") : ""}
           ${c.sp ? badge("🚀 Base instalada") : ""}
           ${c.reps.length ? badge("👥 " + c.reps.map(r => r.split(" ")[0]).join(", ")) : ""}
@@ -409,7 +402,7 @@ function htmlResumen(c) {
   const totalV = t.gan.v + t.per.v + t.act.v + t.hold.v || 1;
   const seg = (v, color) => v ? `<span style="width:${v / totalV * 100}%;background:${color}"></span>` : "";
   const ultimasNotas = c.gs.filter(g => String(g.notas || "").trim()).slice(0, 3);
-  const faltaDato = !c.canal || !c.sector;
+  const faltaDato = !c.segmento;
 
   return `
     <div class="cf-kpis">
@@ -441,8 +434,7 @@ function htmlResumen(c) {
     <div class="cf-card">
       <h4>Datos de la cuenta ${faltaDato ? `<button id="cf-btn-completar">Completar datos</button>` : ""}</h4>
       <dl class="cf-dl">
-        <dt>Canal</dt><dd>${c.canal || `<span class="cf-sub">Sin registrar</span>`}</dd>
-        <dt>Sector</dt><dd>${c.sector ? SECTOR_TXT[c.sector] : `<span class="cf-sub">Sin registrar</span>`}</dd>
+        <dt>Segmento</dt><dd>${c.segmento ? SEGMENTO_TXT[c.segmento] : `<span class="cf-sub">Sin registrar</span>`}</dd>
         <dt>Reps</dt><dd>${c.reps.length ? c.reps.map(esc).join(", ") : "—"}</dd>
         <dt>Primer registro</dt><dd>${primera ? fechaCorta(primera) : "—"}</dd>
         <dt>Contacto principal</dt><dd>${c.contactos[0] ? esc(c.contactos[0].nombre) + (c.contactos[0].cargo ? ` · <span class="cf-sub">${esc(c.contactos[0].cargo)}</span>` : "") : "—"}</dd>
@@ -450,8 +442,7 @@ function htmlResumen(c) {
       </dl>
       <div id="cf-completar" style="display:none">
         <div class="cf-form">
-          ${!c.canal ? `<select class="form-select" id="cf-canal"><option value="">Canal…</option><option>Retail</option><option>Corporativo</option></select>` : ""}
-          ${!c.sector ? `<select class="form-select" id="cf-sector"><option value="">Sector…</option><option value="Público">🏛 Público (gobierno)</option><option value="Privado">💼 Privado</option></select>` : ""}
+          <select class="form-select" id="cf-segmento"><option value="">Segmento…</option>${SEGMENTOS.map(x => `<option value="${x}">${SEGMENTO_TXT[x]}</option>`).join("")}</select>
           <div class="cf-err" id="cf-completar-err"></div>
           <div class="full"><button class="btn-primario" id="cf-completar-ok">💾 Guardar</button></div>
         </div>
@@ -499,7 +490,7 @@ function htmlOportunidades(c) {
         <thead><tr><th>Oportunidad</th><th>Estado</th><th class="num">Valor</th><th class="num ocultar-movil">Esperado</th><th class="ocultar-movil">Radicación</th></tr></thead>
         <tbody>${lista.map(d => `<tr class="${opciones.onAbrirDeal ? "clic" : ""}" data-deal="${esc(d.id)}" title="${puede(d) ? "Abrir oportunidad" : "Solo lectura: es de " + esc(d.rep)}">
           <td><b>${esc(d.oportunidad) || "(sin nombre)"}</b>
-            <div class="cf-sub">${esc(d.rep || "—")}${d.tipo ? " · " + esc(d.tipo) : ""}${d.broker ? " · broker " + esc(d.broker) : ""}${d.origen ? " · " + esc(d.origen) : ""}</div>
+            <div class="cf-sub">${esc(d.rep || "—")}${d.tipo ? " · " + esc(d.tipo) : ""}${canalDeDeal(d) ? " · " + canalDeDeal(d) : ""}${origenDeDeal(d) ? " · " + esc(origenDeDeal(d)) : ""}${d.broker ? " · 🤝 " + esc(d.broker) : ""}</div>
             ${d.estado === "Perdido" && d.motivo_perdida ? `<div class="cf-sub" style="color:#b91c1c">Motivo: ${esc(d.motivo_perdida)}</div>` : ""}
             ${d.comentarios ? `<div class="cf-sub">💬 ${esc(d.comentarios)}</div>` : ""}</td>
           <td>${badge(d.estado)}</td>
@@ -643,11 +634,10 @@ function activar(c) {
   if (bc) bc.addEventListener("click", () => { $("cf-completar").style.display = "block"; });
   const okc = $("cf-completar-ok");
   if (okc) okc.addEventListener("click", async () => {
-    const canal = $("cf-canal")?.value || c.canal;
-    const sector = $("cf-sector")?.value || c.sector;
-    if (!canal || !sector) { $("cf-completar-err").textContent = "Elige el dato que falta."; return; }
+    const segmento = $("cf-segmento")?.value || c.segmento;
+    if (!segmento) { $("cf-completar-err").textContent = "Elige el segmento."; return; }
     okc.disabled = true;
-    const res = await guardarFicha(c, { canal, sector });
+    const res = await guardarFicha(c, { segmento });
     okc.disabled = false;
     if (res.ok) toast("✓ Datos de la cuenta guardados");
     else $("cf-completar-err").textContent = res.error;
@@ -685,14 +675,13 @@ async function guardarFicha(c, datos, contacto) {
   const u = obtenerUsuario();
   if (!c.ficha) {
     return crearCuenta(idCuenta(c.nombre), {
-      nombre: c.nombre, canal: datos.canal || c.canal || "", sector: datos.sector || c.sector || "",
+      nombre: c.nombre, segmento: datos.segmento || c.segmento || "",
       contactos: contacto ? [contacto] : [],
       creadoPor: u?.nombreRep || "Gerencia", origen: "Ficha de cuenta"
     });
   }
   const cambios = {};
-  if (datos.canal && !c.ficha.canal) cambios.canal = datos.canal;
-  if (datos.sector && !c.ficha.sector) cambios.sector = datos.sector;
+  if (datos.segmento && !normSegmento(c.ficha.segmento)) cambios.segmento = datos.segmento;
   if (Object.keys(cambios).length) {
     const r = await actualizarCuenta(c.ficha.id, cambios);
     if (!r.ok) return r;

@@ -14,6 +14,7 @@
 //    Así un atraso no deja vencidos todos los pasos siguientes.
 // ═══════════════════════════════════════════════════════════
 
+import { claveCuenta } from "./catalogos.js";
 import { SPRINT, PASOS_RUTA } from "./sprint-config.js";
 
 const NUM = PASOS_RUTA.map(p => parseInt(p.match(/\d+/)[0], 10)); // [1, 2, 5, 8, 12]
@@ -22,9 +23,8 @@ const iso = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate(
 const parse = (s) => { const [y, m, d] = String(s).split("-").map(Number); return new Date(y, m - 1, d); };
 export const hoyISO = () => iso(new Date());
 
-export function normCuenta(s) {
-  return String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/\s+/g, " ").trim().toLowerCase();
-}
+// Llave de cuenta compartida con todo el CRM: "Provet SAS" = "PROVET S.A."
+export function normCuenta(s) { return claveCuenta(s); }
 
 // Suma n días hábiles (sin sábados, domingos ni festivos del sprint).
 export function sumarHabiles(fecha, n) {

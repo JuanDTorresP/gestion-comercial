@@ -1,0 +1,178 @@
+rules_version = '2';
+
+// ═══════════════════════════════════════════════════════════
+// REGLAS DE SEGURIDAD — CRM Famocdepanel
+// Estas reglas se ejecutan en los SERVIDORES de Google en cada
+// lectura/escritura. Aunque alguien modifique el código del
+// navegador, no puede saltárselas.
+//
+// Roles:
+//   admin    → Gerencia: lee y escribe todo.
+//   vendedor → Rep: lee todo, pero solo crea/edita registros
+//              donde el campo "rep" es su propio nombre.
+//
+// Oct 2026: + colección cuentasSprint (Sprint de Tracción).
+// 28 oct 2026: el vendedor también puede calificar sus cuentas
+//              (campos proyecto* y dealId).
+// Nov 2026: + colección cuentas (ficha del cliente: segmento
+//           y contactos) y colección brokers (catálogo).
+// 10 nov 2026: el vendedor puede completar el SEGMENTO de una
+//           cuenta (solo si estaba vacío); catálogo de brokers.
+// ═══════════════════════════════════════════════════════════
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Funciones auxiliares ──────────────────────────────
+
+    // ¿La petición viene de alguien con sesión iniciada?
+    function autenticado() {
+      return request.auth != null;
+    }
+
+    // Lee el perfil del usuario que hace la petición
+    // (documento usuarios/{su uid}).
+    function miPerfil() {
+      return get(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data;
+    }
+
+    function soyAdmin() {
+      return autenticado() && miPerfil().rol == 'admin';
+    }
+
+    function soyVendedor() {
+      return autenticado() && miPerfil().rol == 'vendedor';
+    }
+
+    // Mi nombre de representante (ej: "Patricia Lopera")
+    function miNombreRep() {
+      return miPerfil().nombreRep;
+    }
+
+    // ── Colección: usuarios ───────────────────────────────
+    // Cada quien puede LEER solo su propio perfil (lo necesita
+    // auth-service.js para saber su rol). Nadie puede escribir
+    // perfiles desde la app: los roles se asignan únicamente
+    // desde la consola de Firebase. Así un vendedor jamás puede
+    // "ascenderse" a admin.
+    match /usuarios/{uid} {
+      allow read: if autenticado() && request.auth.uid == uid;
+      allow write: if false;
+    }
+
+    // ── Colección: deals (Pipeline 2026) ──────────────────
+    match /deals/{dealId} {
+      // Cualquier usuario autenticado puede leer el pipeline
+      // (los reps ven los tableros de gerencia en modo lectura).
+      allow read: if autenticado();
+
+      // Crear: admin crea lo que sea; un vendedor solo puede
+      // crear oportunidades a su propio nombre.
+      allow create: if soyAdmin()
+        || (soyVendedor() && request.resource.data.rep == miNombreRep());
+
+      // Editar: admin edita todo; un vendedor solo edita SUS
+      // oportunidades y no puede reasignárselas a otro rep.
+      allow update: if soyAdmin()
+        || (soyVendedor()
+            && resource.data.rep == miNombreRep()
+            && request.resource.data.rep == miNombreRep());
+
+      // Borrar: solo admin.
+      allow delete: if soyAdmin();
+    }
+
+    // ── Colección: gestiones (Agenda Comercial) ───────────
+    match /gestiones/{gestionId} {
+      allow read: if autenticado();
+
+      allow create: if soyAdmin()
+        || (soyVendedor() && request.resource.data.rep == miNombreRep());
+
+      allow update: if soyAdmin()
+        || (soyVendedor()
+            && resource.data.rep == miNombreRep()
+            && request.resource.data.rep == miNombreRep());
+
+      allow delete: if soyAdmin();
+    }
+
+    // ── Colección: cuentas (ficha del cliente) — nov 2026 ─
+    // Una ficha por cliente con su segmento (Retail / Corporativo /
+    // Público) y la lista de contactos que el equipo va alimentando.
+    // (canal y sector quedan solo en fichas viejas.)
+    //   · Todos leen.
+    //   · Cualquiera crea una cuenta nueva a su nombre (creadoPor).
+    //   · El vendedor solo puede AGREGAR contactos (nunca borrar)
+    //     y completar segmento/canal/sector cuando estaban vacíos.
+    //   · Gerencia edita, unifica y borra todo.
+    match /cuentas/{cuentaId} {
+      allow read: if autenticado();
+
+      allow create: if soyAdmin()
+        || (soyVendedor() && request.resource.data.creadoPor == miNombreRep()
+            && request.resource.data.get('segmento', '') in ['', 'Retail', 'Corporativo', 'Público']);
+
+      allow update: if soyAdmin()
+        || (soyVendedor()
+            && request.resource.data.diff(resource.data).affectedKeys()
+                 .hasOnly(['contactos', 'segmento', 'canal', 'sector', 'actualizadoEn'])
+            && (resource.data.get('segmento', '') == ''
+                || request.resource.data.get('segmento', '') == resource.data.get('segmento', ''))
+            && request.resource.data.get('segmento', '') in ['', 'Retail', 'Corporativo', 'Público']
+            && request.resource.data.get('contactos', []).size()
+                 >= resource.data.get('contactos', []).size()
+            && (resource.data.get('canal', '') == ''
+                || request.resource.data.get('canal', '') == resource.data.get('canal', ''))
+            && (resource.data.get('sector', '') == ''
+                || request.resource.data.get('sector', '') == resource.data.get('sector', '')));
+
+      allow delete: if soyAdmin();
+    }
+
+    // ── Colección: brokers (catálogo) — nov 2026 ──────────
+    // Todos leen. Cualquiera crea un broker a su nombre; solo
+    // Gerencia edita o borra (así nadie cambia datos de otro).
+    match /brokers/{brokerId} {
+      allow read: if autenticado();
+      allow create: if soyAdmin()
+        || (soyVendedor() && request.resource.data.creadoPor == miNombreRep()
+            && request.resource.data.nombre is string
+            && request.resource.data.nombre.size() > 1);
+      allow update, delete: if soyAdmin();
+    }
+
+    // ── Colección: cuentasSprint (Sprint · base instalada) ─
+    // Todos leen. Solo Gerencia carga, reasigna o borra cuentas.
+    // El vendedor asignado solo puede cambiar los datos de
+    // contacto y seguimiento de SUS cuentas (no puede cambiar
+    // el responsable, la prioridad ni lo cotizado).
+    match /cuentasSprint/{cuentaId} {
+      allow read: if autenticado();
+      allow create, delete: if soyAdmin();
+      allow update: if soyAdmin()
+        || (soyVendedor()
+            && resource.data.rep == miNombreRep()
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                 'contactoNombre', 'contactoCargo', 'contactoCorreo', 'contactoTelefono',
+                 'resultado', 'siguientePaso', 'fechaPaso', 'notas', 'actualizadoEn',
+                 'proyecto', 'proyectoDetalle', 'proyectoMes', 'proyectoValor',
+                 'fechaCalificacion', 'dealId'
+               ]));
+    }
+
+    // ── Colección: config (cuotas y ajustes del CRM) ─────
+    // Lectura para todo usuario autenticado (los reps necesitan
+    // su cuota); escritura solo para Gerencia.
+    match /config/{docId} {
+      allow read: if autenticado();
+      allow write: if soyAdmin();
+    }
+
+    // ── Todo lo demás: prohibido ──────────────────────────
+    // Cualquier colección no mencionada arriba queda bloqueada.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
