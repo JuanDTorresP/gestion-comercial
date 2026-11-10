@@ -35,6 +35,20 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
 // ───────────────────────────────────────────────
+// Documento → objeto con su id REAL de Firestore.
+// Ojo: varios registros migrados de las apps viejas traen un campo
+// propio "id" (ej. 1785187625260). Si ese campo pisara el id del
+// documento, editar, borrar o unificar fallaría con "not-found".
+// Por eso el id del documento va de último y el viejo se guarda aparte.
+// ───────────────────────────────────────────────
+function conId(d) {
+  const datos = d.data();
+  const o = { ...datos, id: d.id };
+  if (datos.id !== undefined && String(datos.id) !== d.id) o.idLegado = datos.id;
+  return o;
+}
+
+// ───────────────────────────────────────────────
 // Suscripciones en tiempo real
 // Uso:
 //   const parar = suscribirDeals(function(lista){ ... });
@@ -45,7 +59,7 @@ import {
 export function suscribirDeals(callback, onError) {
   const q = query(collection(db, "deals"), orderBy("creadoEn", "desc"));
   return onSnapshot(q, (snap) => {
-    const lista = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    const lista = snap.docs.map((d) => conId(d));
     callback(lista);
   }, (error) => {
     console.error("Error escuchando deals:", error);
@@ -56,7 +70,7 @@ export function suscribirDeals(callback, onError) {
 export function suscribirGestiones(callback, onError) {
   const q = query(collection(db, "gestiones"), orderBy("creadoEn", "desc"));
   return onSnapshot(q, (snap) => {
-    const lista = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    const lista = snap.docs.map((d) => conId(d));
     callback(lista);
   }, (error) => {
     console.error("Error escuchando gestiones:", error);
@@ -187,7 +201,7 @@ export async function guardarCuotas(anio, valores) {
 
 export function suscribirCuentasSprint(callback, onError) {
   return onSnapshot(collection(db, "cuentasSprint"), (snap) => {
-    callback(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    callback(snap.docs.map((d) => conId(d)));
   }, (error) => {
     console.error("Error escuchando cuentasSprint:", error);
     if (onError) onError(error);
@@ -268,7 +282,7 @@ export function idCuenta(nombre) { return claveCuenta(nombre); }
 
 export function suscribirCuentas(callback, onError) {
   return onSnapshot(collection(db, "cuentas"), (snap) => {
-    callback(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    callback(snap.docs.map((d) => conId(d)));
   }, (error) => {
     console.error("Error escuchando cuentas:", error);
     if (onError) onError(error);
@@ -323,7 +337,7 @@ export async function agregarContactoCuenta(id, contacto) {
 // ───────────────────────────────────────────────
 export function suscribirBrokers(callback, onError) {
   return onSnapshot(collection(db, "brokers"), (snap) => {
-    callback(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    callback(snap.docs.map((d) => conId(d)));
   }, (error) => {
     console.error("Error escuchando brokers:", error);
     if (onError) onError(error);
