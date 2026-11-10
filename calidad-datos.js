@@ -254,7 +254,11 @@ async function aplicar(cambios, resumen) {
   ocupado = true;
   const res = await aplicarCambiosLote(cambios);
   ocupado = false;
-  if (!res.ok) { alert("No se pudo completar: " + res.error); return false; }
+  if (!res.ok) {
+    alert(`Se aplicaron ${res.aplicados || 0} de ${cambios.length} cambios.\n\n${res.error}\n\nToma una captura de este mensaje para revisarlo.`);
+    setTimeout(render, 400);
+    return false;
+  }
   toast(`✓ ${cambios.length} cambio(s) aplicados`);
   setTimeout(render, 400);
   return true;

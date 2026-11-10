@@ -366,23 +366,55 @@ export async function eliminarBroker(id) {
 //              { col, id, borrar: true } → delete
 //              { col, id, crear: datos } → set con merge
 // ───────────────────────────────────────────────
-export async function aplicarCambiosLote(cambios) {
-  try {
-    for (let i = 0; i < cambios.length; i += 400) {
-      const batch = writeBatch(db);
-      for (const c of cambios.slice(i, i + 400)) {
-        const ref = doc(db, c.col, c.id);
-        if (c.borrar) batch.delete(ref);
-        else if (c.crear) batch.set(ref, { ...c.crear, actualizadoEn: serverTimestamp() }, { merge: true });
-        else batch.update(ref, { ...c.datos, actualizadoEn: serverTimestamp() });
-      }
-      await batch.commit();
-    }
-    return { ok: true };
-  } catch (error) {
-    console.error("Error aplicando cambios en lote:", error);
-    return { ok: false, error: traducirErrorFirestore(error) };
+// Firestore rechaza campos con valor `undefined`: se quitan antes de escribir.
+function limpiarIndefinidos(v) {
+  if (Array.isArray(v)) return v.filter(x => x !== undefined).map(limpiarIndefinidos);
+  if (v && typeof v === "object" && Object.getPrototypeOf(v) === Object.prototype) {
+    const o = {};
+    for (const [k, x] of Object.entries(v)) if (x !== undefined) o[k] = limpiarIndefinidos(x);
+    return o;
   }
+  return v;
+}
+function agregarAlLote(batch, c) {
+  if (!c || !c.col || !c.id) throw Object.assign(new Error("Cambio sin colección o id"), { code: "invalid-argument" });
+  const ref = doc(db, c.col, String(c.id));
+  if (c.borrar) batch.delete(ref);
+  else if (c.crear) batch.set(ref, { ...limpiarIndefinidos(c.crear), actualizadoEn: serverTimestamp() }, { merge: true });
+  else batch.update(ref, { ...limpiarIndefinidos(c.datos), actualizadoEn: serverTimestamp() });
+}
+
+// Si un lote falla, se reintenta documento por documento para aplicar todo
+// lo posible y decir EXACTAMENTE cuál falló y por qué.
+// Devuelve { ok, aplicados, fallidos: [{ col, id, codigo, detalle }], error }
+export async function aplicarCambiosLote(cambios) {
+  let aplicados = 0;
+  const fallidos = [];
+  for (let i = 0; i < cambios.length; i += 400) {
+    const grupo = cambios.slice(i, i + 400);
+    try {
+      const batch = writeBatch(db);
+      grupo.forEach(c => agregarAlLote(batch, c));
+      await batch.commit();
+      aplicados += grupo.length;
+    } catch (errorLote) {
+      console.warn("Lote rechazado; se reintenta uno por uno:", errorLote);
+      for (const c of grupo) {
+        try {
+          const b1 = writeBatch(db);
+          agregarAlLote(b1, c);
+          await b1.commit();
+          aplicados++;
+        } catch (e) {
+          console.error("Falló", c.col, c.id, e);
+          fallidos.push({ col: c?.col, id: c?.id, codigo: e.code || "desconocido", detalle: String(e.message || e).slice(0, 160) });
+        }
+      }
+    }
+  }
+  if (!fallidos.length) return { ok: true, aplicados, fallidos };
+  const resumen = fallidos.slice(0, 5).map(f => `• ${f.col}/${f.id}: ${f.codigo} — ${f.detalle}`).join("\n");
+  return { ok: false, aplicados, fallidos, error: `${fallidos.length} cambio(s) no se pudieron guardar:\n${resumen}${fallidos.length > 5 ? "\n…" : ""}` };
 }
 
 // ───────────────────────────────────────────────
@@ -395,5 +427,6 @@ function traducirErrorFirestore(error) {
   if (error.code === "unavailable") {
     return "Sin conexión con la base de datos. Verifica tu internet.";
   }
-  return "Ocurrió un error al guardar. Intenta de nuevo.";
+  // Mostramos el código real para poder diagnosticar (ej. not-found, invalid-argument)
+  return `Ocurrió un error al guardar (${error.code || "sin código"}: ${String(error.message || "").slice(0, 120)}). Intenta de nuevo.`;
 }
