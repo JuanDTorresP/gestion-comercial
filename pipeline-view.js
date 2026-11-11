@@ -55,6 +55,7 @@ import {
 import { alCambiarCatalogo, cuentaDe, nombreOficial, listaCuentas, brokers as listaBrokers, brokerDe, detenerCatalogo } from "./cuentas-store.js";
 import { pintarBrokers } from "./brokers-view.js";
 import { abrirCalidadDatos } from "./calidad-datos.js";
+import { abrirEditorCuenta } from "./cuenta-editor.js";
 
 // ═══════════════════════════════════════════
 // ⚙️ CUOTAS — ahora se administran DESDE EL CRM
@@ -1910,7 +1911,7 @@ function renderCuentas() {
     ? `<tr><td colspan="7" class="lista-vacia">Sin cuentas con los filtros actuales</td></tr>`
     : lista.map(x => `
       <tr class="cta-row" data-cta="${esc(x.nombre)}" style="cursor:pointer">
-        <td><b>${esc(x.nombre)}</b>${x.segmento ? ` <span class="badge" style="background:#F3F4F6;color:#374151">${esc(SEGMENTO_TXT[x.segmento])}</span>` : ""}</td>
+        <td>${esAdmin() && x.nombre !== "(Sin cuenta)" ? `<button class="btn-editar cta-ed" data-ed="${esc(x.nombre)}" title="Editar cuenta" aria-label="Editar cuenta" style="margin-right:4px">✏️</button>` : ""}<b>${esc(x.nombre)}</b>${x.segmento ? ` <span class="badge" style="background:#F3F4F6;color:#374151">${esc(SEGMENTO_TXT[x.segmento])}</span>` : ""}</td>
         <td style="text-align:right">${x.n}</td>
         <td style="text-align:right" title="${fmtFull(x.total)}"><b>${fmt(x.total)}</b></td>
         <td style="text-align:right">${fmt(x.activo)}</td>
@@ -1919,6 +1920,10 @@ function renderCuentas() {
         <td style="text-align:right">${ultimoContactoHtml(x.nombre)}</td>
       </tr>`).join("");
 
+  cont.querySelectorAll(".cta-ed").forEach(b => b.addEventListener("click", (e) => {
+    e.stopPropagation();
+    abrirEditorCuenta(b.dataset.ed);
+  }));
   cont.querySelectorAll(".cta-row").forEach(tr => {
     tr.addEventListener("click", () => {
       const nombre = tr.dataset.cta;

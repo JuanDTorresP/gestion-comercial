@@ -20,6 +20,8 @@ import {
   claveCuenta, parecidoCuentas, normTipo, normCanal, normOrigen, normSegmento, segmentoDeRegistro
 } from "./catalogos.js";
 import { alCambiarCatalogo, datosCatalogo, listaCuentas, cuentasConVariantes, brokers as listaBrokers, brokerDe, cuentaDe } from "./cuentas-store.js";
+import { cambiosUnificar } from "./cuentas-acciones.js";
+import { abrirEditorCuenta } from "./cuenta-editor.js";
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -68,6 +70,8 @@ function montar() {
       .cd-tbl select{padding:5px 8px;font-size:12px}
       .cd-vacio{font-size:13px;color:#15803d;padding:14px;background:var(--green-l);border-radius:10px}
       .cd-sub{font-size:13px;font-weight:700;margin:16px 0 8px}
+      .cd-ed{border:none;background:none;cursor:pointer;font-size:12px;padding:2px 6px;border-radius:6px;color:#1d4ed8;font-family:inherit;font-weight:600}
+      .cd-ed:hover{background:var(--blue-l)}
     </style>
     <div class="modal-overlay" id="cd-modal">
       <div class="modal-box cd-box">
@@ -179,19 +183,19 @@ function fuentes(c) {
 function htmlDup(g) {
   const nombres = listaCuentas().map(c => `<option value="${esc(c.nombre)}">`).join("");
   return `
-    <div class="cd-intro">Al unificar, <b>todas</b> las oportunidades, gestiones, cuentas del Sprint y fichas quedan con el nombre oficial que elijas, y los contactos de las fichas se juntan. Las mayúsculas, tildes, puntos y SAS/SA/LTDA ya no separan cuentas.</div>
+    <div class="cd-intro">Al unificar, <b>todas</b> las oportunidades, gestiones, cuentas del Sprint y fichas quedan con el nombre oficial que elijas, y los contactos de las fichas se juntan. Las mayúsculas, tildes, puntos y SAS/SA/LTDA ya no separan cuentas.<br>✏️ <b>Editar</b> abre la cuenta para corregirla a mano: renombrar, mover oportunidades o gestiones a otra cuenta (ej. Worley vía broker Isarco), unir o eliminar.</div>
     <div class="cd-sub">Escritas de varias formas (${g.dups.length})</div>
     ${g.dups.length ? `<div class="cd-acc" style="margin:-2px 0 10px"><button id="cd-dup-todas">Unificar todas con el nombre sugerido</button></div>` +
       g.dups.map((c, i) => `<div class="cd-grupo">
-        <h5><span>${esc(c.nombre)}</span><small style="font-weight:400;color:var(--txt3)">${fuentes(c)}</small></h5>
+        <h5><span>${esc(c.nombre)} <button class="cd-ed" data-editar="${esc(c.nombre)}" title="Abrir y editar esta cuenta a mano">✏️ Editar</button></span><small style="font-weight:400;color:var(--txt3)">${fuentes(c)}</small></h5>
         ${Object.entries(c.variantes).sort((a, b) => b[1] - a[1]).map(([v, n]) => `<label class="cd-var"><input type="radio" name="cd-of-${i}" value="${esc(v)}" ${v === c.nombre ? "checked" : ""}/> ${esc(v)} <small>(${n} registro${n === 1 ? "" : "s"})</small></label>`).join("")}
         <div class="cd-acc"><button data-unificar="${i}">Unificar con el nombre elegido</button></div>
       </div>`).join("") : `<div class="cd-vacio">✓ No hay cuentas escritas de varias formas.</div>`}
 
     <div class="cd-sub">Posibles duplicados con nombre distinto (${g.parecidas.length})</div>
     ${g.parecidas.length ? g.parecidas.slice(0, 40).map((x, i) => `<div class="cd-grupo">
-        <div class="cd-var"><b>${esc(x.a.nombre)}</b> <small>${fuentes(x.a)}</small></div>
-        <div class="cd-var"><b>${esc(x.b.nombre)}</b> <small>${fuentes(x.b)}</small></div>
+        <div class="cd-var"><b>${esc(x.a.nombre)}</b> <small>${fuentes(x.a)}</small> <button class="cd-ed" data-editar="${esc(x.a.nombre)}" title="Abrir y editar esta cuenta a mano">✏️ Editar</button></div>
+        <div class="cd-var"><b>${esc(x.b.nombre)}</b> <small>${fuentes(x.b)}</small> <button class="cd-ed" data-editar="${esc(x.b.nombre)}" title="Abrir y editar esta cuenta a mano">✏️ Editar</button></div>
         <div class="cd-acc">
           <button data-par="${i}" data-dest="a">Unir en “${esc(x.a.nombre)}”</button>
           <button data-par="${i}" data-dest="b">Unir en “${esc(x.b.nombre)}”</button>
@@ -209,39 +213,6 @@ function htmlDup(g) {
         <button class="cd-btn" id="cd-man-ok">Unir</button>
       </div>
     </div>`;
-}
-
-// Arma todos los cambios para dejar `nombres` como una sola cuenta `oficial`
-function cambiosUnificar(oficial, nombres) {
-  const d = datosCatalogo();
-  const claves = new Set([oficial, ...nombres].map(claveCuenta));
-  const claveOf = claveCuenta(oficial);
-  const cambios = [];
-  d.deals.forEach(x => {
-    if (claves.has(claveCuenta(x.cuenta)) && (x.cuenta !== oficial || x.cuentaId !== claveOf))
-      cambios.push({ col: "deals", id: x.id, datos: { cuenta: oficial, cuentaId: claveOf } });
-  });
-  d.gestionesTodas.forEach(x => {
-    if (claves.has(claveCuenta(x.cuenta)) && (x.cuenta !== oficial || x.cuentaId !== claveOf))
-      cambios.push({ col: "gestiones", id: x.id, datos: { cuenta: oficial, cuentaId: claveOf } });
-  });
-  d.sprint.forEach(x => {
-    if (claves.has(claveCuenta(x.cuenta)) && x.cuenta !== oficial)
-      cambios.push({ col: "cuentasSprint", id: x.id, datos: { cuenta: oficial } });
-  });
-  // Fichas: se juntan en una sola con id = llave del nombre oficial
-  const fichas = d.fichas.filter(f => claves.has(claveCuenta(f.nombre || f.id)) || claves.has(f.id));
-  const contactos = [];
-  fichas.forEach(f => (f.contactos || []).forEach(ct => {
-    if (ct?.nombre && !contactos.some(y => claveCuenta(y.nombre) === claveCuenta(ct.nombre))) contactos.push(ct);
-  }));
-  const principal = fichas.find(f => f.id === claveOf) || fichas.find(f => claveCuenta(f.nombre) === claveOf) || fichas[0];
-  const segmento = segmentoDeRegistro(principal) || fichas.map(segmentoDeRegistro).find(Boolean) || cuentaDe(oficial)?.segmento || "";
-  const nueva = { nombre: oficial, contactos, segmento };
-  if (principal?.creadoPor) nueva.creadoPor = principal.creadoPor;
-  if (fichas.length || segmento) cambios.push({ col: "cuentas", id: claveOf, crear: nueva });
-  fichas.filter(f => f.id !== claveOf).forEach(f => cambios.push({ col: "cuentas", id: f.id, borrar: true }));
-  return cambios;
 }
 
 async function aplicar(cambios, resumen) {
@@ -274,7 +245,7 @@ function htmlSeg(g) {
       <div class="cd-acc"><button id="cd-crear-fichas">Crear las ${g.sinFicha.length} fichas</button></div></div>` : ""}
     <div class="cd-sub">Cuentas sin segmento (${lista.length})</div>
     ${lista.length ? `<table class="cd-tbl"><thead><tr><th>Cuenta</th><th>Uso</th><th>Segmento</th></tr></thead><tbody>
-      ${lista.slice(0, 150).map((c, i) => `<tr><td><b>${esc(c.nombre)}</b></td><td style="color:var(--txt3)">${fuentes(c)}</td>
+      ${lista.slice(0, 150).map((c, i) => `<tr><td><b>${esc(c.nombre)}</b> <button class="cd-ed" data-editar="${esc(c.nombre)}" title="Abrir y editar esta cuenta a mano">✏️ Editar</button></td><td style="color:var(--txt3)">${fuentes(c)}</td>
         <td><select class="form-select cd-seg" data-i="${i}"><option value="">—</option>${SEGMENTOS.map(s => `<option value="${s}">${SEGMENTO_TXT[s]}</option>`).join("")}</select></td></tr>`).join("")}
     </tbody></table>
     <div class="cd-acc"><button id="cd-seg-ok">Guardar segmentos elegidos</button></div>
@@ -343,6 +314,9 @@ function cambiosBroker(b, destino, crear) {
 function activar(g) {
   const body = $("cd-body");
   const on = (sel, fn) => body.querySelectorAll(sel).forEach(el => el.addEventListener("click", () => fn(el)));
+
+  // ✏️ Abrir cualquier cuenta para editarla a mano
+  on("[data-editar]", (el) => abrirEditorCuenta(el.dataset.editar, { onCambio: () => render() }));
 
   // Duplicados
   on("[data-unificar]", async (el) => {

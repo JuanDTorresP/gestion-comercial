@@ -959,7 +959,7 @@ function construirIndice() {
     if (!c) return;
     if (!c.fichaId || f.id === c.clave) { c.fichaId = f.id; c.ficha = f; }
     if (!c.segmento) c.segmento = segmentoDeRegistro(f);
-    [...(f.contactos || [])].sort((a, b) => String(b.fecha || "").localeCompare(String(a.fecha || ""))).forEach(ct => sumarContacto(c, ct));
+    [...(f.contactos || [])].sort((a, b) => (b.principal ? 1 : 0) - (a.principal ? 1 : 0) || String(b.fecha || "").localeCompare(String(a.fecha || ""))).forEach(ct => sumarContacto(c, ct));
   });
   // 2. Gestiones (de la más reciente a la más antigua)
   [...gestiones].sort((a, b) => String(b.fecha || "").localeCompare(String(a.fecha || ""))).forEach(g => {
@@ -984,8 +984,13 @@ function construirIndice() {
     c.enSprint = true;
     if (cs.contactoNombre) sumarContacto(c, { nombre: cs.contactoNombre, cargo: cs.contactoCargo, correo: cs.contactoCorreo, telefono: cs.contactoTelefono });
   });
-  // Nombre oficial: el de la ficha; si no, la escritura más usada
-  m.forEach(c => { c.nombre = c.ficha?.nombre || nombrePreferido(c.variantes); });
+  // Nombre oficial: el de la ficha; si no, la escritura más usada.
+  // Los contactos que Gerencia borró (contactosOcultos) no se muestran.
+  m.forEach(c => {
+    c.nombre = c.ficha?.nombre || nombrePreferido(c.variantes);
+    const ocultos = new Set((c.ficha?.contactosOcultos || []).map(normNombre));
+    if (ocultos.size) c.contactos = c.contactos.filter(x => !ocultos.has(normNombre(x.nombre)));
+  });
   indice = m;
 }
 

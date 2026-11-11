@@ -31,6 +31,7 @@ import {
   suscribirGestiones, suscribirDeals, suscribirCuentas, suscribirCuentasSprint,
   crearCuenta, actualizarCuenta, agregarContactoCuenta, idCuenta
 } from "./firestore-service.js";
+import { abrirEditorCuenta } from "./cuenta-editor.js";
 import { SEGMENTOS, SEGMENTO_TXT, segmentoDeRegistro, normSegmento, nombrePreferido, canalDeDeal, origenDeDeal } from "./catalogos.js";
 
 // ── Constantes ──
@@ -206,6 +207,9 @@ function datosCuenta(clave) {
     if (!x.ultimo || (g.fecha || "") > x.ultimo) x.ultimo = g.fecha || "";
   });
   if (sp?.contactoNombre) sumar({ nombre: sp.contactoNombre, cargo: sp.contactoCargo, correo: sp.contactoCorreo, telefono: sp.contactoTelefono }, "Base instalada");
+  // Contactos que Gerencia borró desde ✏️ Editar cuenta
+  const ocultos = new Set((ficha?.contactosOcultos || []).map(norm));
+  if (ocultos.size) for (let i = contactos.length - 1; i >= 0; i--) if (ocultos.has(norm(contactos[i].nombre))) contactos.splice(i, 1);
 
   const reps = [...new Set([...ds.map(d => d.rep), ...gs.map(g => g.rep)].filter(r => r && !excluido(r)))];
   return { clave, nombre, ficha, gs, ds, sp, segmento, contactos, reps };
@@ -356,6 +360,7 @@ function renderHeader(c) {
     </div>
     <div class="cf-acc">
       <button id="cf-btn-gestion">＋ Registrar gestión</button>
+      ${esAdmin() ? `<button id="cf-btn-editar">✏️ Editar cuenta</button>` : ""}
       ${c.ds.length && opciones.onVerOportunidades ? `<button id="cf-btn-tabla">📋 Ver en la tabla de oportunidades</button>` : ""}
     </div>
     <div class="cf-tabs">${tabs.map(([k, t]) => `<button class="cf-tab ${k === pestana ? "on" : ""}" data-tab="${k}">${t}</button>`).join("")}</div>`;
@@ -365,6 +370,14 @@ function renderHeader(c) {
     const nombre = c.nombre;
     cerrar();
     document.dispatchEvent(new CustomEvent("ficha:registrar-gestion", { detail: { cuenta: nombre } }));
+  });
+  const be = $("cf-btn-editar");
+  if (be) be.addEventListener("click", () => {
+    const opcionesFicha = opciones;
+    abrirEditorCuenta(c.nombre, {
+      // Si se renombra o se une, la ficha se vuelve a abrir con el nombre nuevo
+      onCambio: (nuevo) => { if (nuevo && abierta) abrirFichaCuenta(nuevo, opcionesFicha); }
+    });
   });
   const bt = $("cf-btn-tabla");
   if (bt) bt.addEventListener("click", () => { const n = c.nombre; cerrar(); opciones.onVerOportunidades(n); });
