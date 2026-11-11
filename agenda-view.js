@@ -1,5 +1,9 @@
 // ═══════════════════════════════════════════════════════════
-// agenda-view.js — v5.2
+// agenda-view.js — v5.3
+// v5.3 (nov 2026): OPORTUNIDAD con 3 opciones en vez de texto libre:
+//       🔄 Seguimiento (lista de las oportunidades de ESA cuenta en el pipeline),
+//       ✨ Nueva oportunidad (se crea en el pipeline) o ⚪ Sin oportunidad
+//       (relacionamiento / operativa). Así la oportunidad ya no se escribe a mano.
 // v5.2 (nov 2026): SEGMENTO único (Retail / Corporativo / Público) en lugar
 //       de Canal + Sector; la misma cuenta escrita distinto ("SAS"/"SA",
 //       mayúsculas) es UNA sola (claveCuenta); la oportunidad creada desde
@@ -136,6 +140,9 @@ let modoCuenta = "existente";   // "existente" | "nueva"
 let cuentaOriginal = "";        // cuenta de la gestión en edición
 let tipoClienteOriginal = "";
 let histLimite = 8;
+// Oportunidad de la gestión: "seg" (seguimiento) | "nueva" | "sin"
+let modoOpp = "seg";
+let oppLegado = "";   // texto viejo de oportunidad (gestiones sin vínculo al pipeline)
 // Histórico
 let hisFY = null, hisMes = "", hisInd = "total", hisRep = "";
 let editandoId = null;
@@ -617,8 +624,45 @@ function pintarEstructura() {
               </div>
             </div>
 
-            <div class="form-group full"><label class="form-label">Oportunidad *</label>
-              <input class="form-input" id="ag-c-oportunidad" placeholder="Ej: Renovación contrato anual"/></div>
+            <!-- 💼 OPORTUNIDAD: seguimiento, nueva o sin oportunidad -->
+            <div class="cta-box" id="ag-opp-box">
+              <label class="form-label">Oportunidad *</label>
+              <div class="seg">
+                <button type="button" id="ag-opp-b-seg" class="on">🔄 Seguimiento</button>
+                <button type="button" id="ag-opp-b-nue">✨ Nueva oportunidad</button>
+                <button type="button" id="ag-opp-b-sin">⚪ Sin oportunidad</button>
+              </div>
+              <div id="ag-opp-w-seg">
+                <select class="form-select" id="ag-c-deal" style="width:100%"></select>
+                <div class="cta-sub" id="ag-opp-seg-nota"></div>
+                <div class="cta-sub" id="ag-opp-op" style="display:none">Gestión operativa: queda asociada a la oportunidad sin cambiar su estado ni su valor.</div>
+              </div>
+              <div id="ag-opp-w-nue" style="display:none">
+                <input class="form-input" id="ag-c-oportunidad" placeholder="Nombre de la oportunidad (ej. Remodelación piso 5)" maxlength="120" style="width:100%"/>
+                <div class="cta-sub">Se crea en el Pipeline a nombre de la cuenta elegida.</div>
+              </div>
+              <div id="ag-opp-w-sin" style="display:none" class="cta-sub">Para visitas de relacionamiento o gestiones operativas que no corresponden a una oportunidad del pipeline.<span id="ag-opp-legado"></span></div>
+              <div id="ag-link-campos" style="display:none;margin-top:10px">
+                <div class="form-grid">
+                  <div class="form-group"><label class="form-label">Estado de la oportunidad</label>
+                    <select class="form-select" id="ag-c-deal-estado">
+                      ${ESTADOS_PIPE.map(e => `<option>${e}</option>`).join("")}
+                    </select></div>
+                  <div class="form-group"><label class="form-label">Valor (COP)</label>
+                    <input class="form-input" id="ag-c-deal-valor" type="number" min="0" placeholder="0"/></div>
+                </div>
+                <div class="form-grid" id="ag-link-nueva" style="display:none;margin-top:10px">
+                  <div class="form-group"><label class="form-label">Canal *</label>
+                    <select class="form-select" id="ag-c-deal-canal"><option value="">— Selecciona —</option>${CANALES.map(c => `<option>${c}</option>`).join("")}</select></div>
+                  <div class="form-group"><label class="form-label">Origen *</label>
+                    <select class="form-select" id="ag-c-deal-origen"></select></div>
+                  <div class="form-group full" id="ag-deal-brk-wrap" style="display:none"><label class="form-label">Broker *</label>
+                    <select class="form-select" id="ag-c-deal-broker"></select>
+                    <div class="link-nota">¿No está? Créalo en Pipeline → 🤝 Brokers o en el formulario de oportunidad.</div></div>
+                </div>
+                <div class="link-nota" id="ag-link-nota"></div>
+              </div>
+            </div>
             <div class="form-group"><label class="form-label">Modalidad *</label>
               <select class="form-select" id="ag-c-negocio">
                 <option value="">— Selecciona —</option>
@@ -647,34 +691,6 @@ function pintarEstructura() {
                 <option value="Diseño">✏️ Diseño</option>
                 <option value="Negociación">🤝 Negociación</option>
               </select></div>
-
-            <!-- 🔗 TRAZABILIDAD CON EL PIPELINE -->
-            <div class="link-box" id="ag-link-wrap" style="display:none">
-              <label class="form-label">🔗 Trazabilidad con el pipeline</label>
-              <select class="form-select" id="ag-c-deal" style="width:100%">
-                <option value="">— No vincular al pipeline —</option>
-              </select>
-              <div id="ag-link-campos" style="display:none;margin-top:10px">
-                <div class="form-grid">
-                  <div class="form-group"><label class="form-label">Estado de la oportunidad</label>
-                    <select class="form-select" id="ag-c-deal-estado">
-                      ${ESTADOS_PIPE.map(e => `<option>${e}</option>`).join("")}
-                    </select></div>
-                  <div class="form-group"><label class="form-label">Valor (COP)</label>
-                    <input class="form-input" id="ag-c-deal-valor" type="number" min="0" placeholder="0"/></div>
-                </div>
-                <div class="form-grid" id="ag-link-nueva" style="display:none;margin-top:10px">
-                  <div class="form-group"><label class="form-label">Canal *</label>
-                    <select class="form-select" id="ag-c-deal-canal"><option value="">— Selecciona —</option>${CANALES.map(c => `<option>${c}</option>`).join("")}</select></div>
-                  <div class="form-group"><label class="form-label">Origen *</label>
-                    <select class="form-select" id="ag-c-deal-origen"></select></div>
-                  <div class="form-group full" id="ag-deal-brk-wrap" style="display:none"><label class="form-label">Broker *</label>
-                    <select class="form-select" id="ag-c-deal-broker"></select>
-                    <div class="link-nota">¿No está? Créalo en Pipeline → 🤝 Brokers o en el formulario de oportunidad.</div></div>
-                </div>
-                <div class="link-nota" id="ag-link-nota"></div>
-              </div>
-            </div>
 
             <!-- 🚀 SPRINT DE TRACCIÓN (opcional) -->
             <div class="link-box sprint-box">
@@ -744,12 +760,15 @@ function pintarEstructura() {
   $("ag-c-tipo").addEventListener("change", () => {
     const esComercial = $("ag-c-tipo").value === "Comercial";
     $("ag-etapa-wrap").style.display = esComercial ? "flex" : "none";
-    $("ag-link-wrap").style.display = esComercial ? "block" : "none";
-    if (!esComercial) { $("ag-c-etapa").value = ""; $("ag-c-deal").value = ""; alCambiarDeal(); }
+    if (!esComercial) $("ag-c-etapa").value = "";
+    alCambiarDeal();
   });
   $("ag-c-etapa").addEventListener("change", sugerirEstadoDesdeEtapa);
   $("ag-c-sprint").addEventListener("change", alCambiarSprint);
   $("ag-c-deal").addEventListener("change", alCambiarDeal);
+  $("ag-opp-b-seg").addEventListener("click", () => ponerModoOpp("seg"));
+  $("ag-opp-b-nue").addEventListener("click", () => ponerModoOpp("nueva"));
+  $("ag-opp-b-sin").addEventListener("click", () => ponerModoOpp("sin"));
   $("ag-c-deal-canal").addEventListener("change", alCambiarCanalDeal);
   // Cuenta existente / nueva + contacto
   $("ag-cta-modo-ex").addEventListener("click", () => ponerModoCuenta("existente"));
@@ -852,48 +871,93 @@ function actualizarOpcionesFiltros() {
 // ═══════════════════════════════════════════
 // 🔗 TRAZABILIDAD: selector de oportunidades
 // ═══════════════════════════════════════════
-function dealsElegibles() {
-  // Gerencia puede vincular cualquier oportunidad;
-  // un vendedor solo las suyas (las reglas lo exigen igual).
+// Oportunidades de la CUENTA elegida en el formulario.
+// Gerencia ve y vincula todas; un vendedor solo las suyas (las reglas solo
+// le dejan actualizar sus oportunidades). Activas primero.
+function dealsDeCuenta() {
+  const info = modoCuenta === "existente" ? infoCuenta($("ag-c-cuenta").value.trim()) : null;
+  if (!info) return { info: null, propias: [], ajenas: [] };
   const u = obtenerUsuario();
-  const lista = esAdmin() ? deals : deals.filter(d => d.rep === u?.nombreRep);
-  return [...lista].sort((a, b) => String(a.cuenta || "").localeCompare(String(b.cuenta || ""), "es"));
+  const todas = deals.filter(d => String(d.cuenta || "").trim() && claveCuenta(d.cuenta) === info.clave);
+  const propias = esAdmin() ? todas : todas.filter(d => d.rep === u?.nombreRep);
+  const orden = { "Negociación": 1, "En diseño": 2, "Cotizado": 3, "Identificado": 4, "On hold": 5, "Ganado": 6, "Perdido": 7 };
+  propias.sort((a, b) => (orden[a.estado] || 9) - (orden[b.estado] || 9) || String(a.oportunidad || "").localeCompare(String(b.oportunidad || ""), "es"));
+  return { info, propias, ajenas: todas.filter(d => !propias.includes(d)) };
 }
 
 function poblarSelectDeals() {
   const sel = $("ag-c-deal");
   if (!sel) return;
   const actual = sel.value;
-  sel.innerHTML = `<option value="">— No vincular al pipeline —</option>` +
-    `<option value="__nueva__">➕ Crear NUEVA oportunidad en el pipeline</option>` +
-    dealsElegibles().map(d =>
-      `<option value="${d.id}">${esc(d.cuenta)} — ${esc(d.oportunidad)} (${esc(d.estado)} · ${fmt(d.valor)})</option>`
-    ).join("");
+  const { info, propias, ajenas } = dealsDeCuenta();
+  const nota = $("ag-opp-seg-nota");
+  if (!info) {
+    sel.innerHTML = `<option value="">— Elige primero una cuenta existente —</option>`;
+    nota.textContent = modoCuenta === "nueva" ? "Una cuenta nueva aún no tiene oportunidades: usa ✨ Nueva oportunidad." : "";
+  } else if (!propias.length) {
+    sel.innerHTML = `<option value="">— ${esc(info.nombre)} no tiene oportunidades${esAdmin() ? "" : " tuyas"} en el pipeline —</option>`;
+    nota.innerHTML = `Usa <b>✨ Nueva oportunidad</b> para crearla.` + (ajenas.length ? ` (Hay ${ajenas.length} de otros reps: ${[...new Set(ajenas.map(d => (d.rep || "").split(" ")[0]))].map(esc).join(", ")}.)` : "");
+  } else {
+    sel.innerHTML = `<option value="">— Elige la oportunidad (${propias.length}) —</option>` +
+      propias.map(d => `<option value="${esc(d.id)}">${esc(d.oportunidad || "(sin nombre)")} — ${esc(d.estado || "")} · ${fmt(d.valor)}${esAdmin() ? " · " + esc((d.rep || "").split(" ")[0]) : ""}</option>`).join("");
+    nota.textContent = ajenas.length ? `También hay ${ajenas.length} oportunidad(es) de otros reps en esta cuenta.` : "";
+  }
   if ([...sel.options].some(o => o.value === actual)) sel.value = actual;
 }
 
+function ponerModoOpp(modo) {
+  modoOpp = modo;
+  $("ag-opp-b-seg").classList.toggle("on", modo === "seg");
+  $("ag-opp-b-nue").classList.toggle("on", modo === "nueva");
+  $("ag-opp-b-sin").classList.toggle("on", modo === "sin");
+  $("ag-opp-w-seg").style.display = modo === "seg" ? "block" : "none";
+  $("ag-opp-w-nue").style.display = modo === "nueva" ? "block" : "none";
+  $("ag-opp-w-sin").style.display = modo === "sin" ? "block" : "none";
+  $("ag-opp-legado").innerHTML = modo === "sin" && oppLegado ? `<br>Texto actual: <b>${esc(oppLegado)}</b>` : "";
+  if (modo === "seg") poblarSelectDeals();
+  alCambiarDeal();
+  if (modo === "nueva") $("ag-c-oportunidad").focus();
+}
+
+// Vínculo con el pipeline según el modo: id de la oportunidad, "__nueva__" o ""
+function vinculoActual() {
+  if (modoOpp === "nueva") return "__nueva__";
+  if (modoOpp === "seg") return $("ag-c-deal").value;
+  return "";
+}
+
 function alCambiarDeal() {
-  const val = $("ag-c-deal").value;
+  const val = vinculoActual();
   const campos = $("ag-link-campos");
   const nota = $("ag-link-nota");
-
-  if (!val) { campos.style.display = "none"; return; }
+  const esComercial = $("ag-c-tipo").value === "Comercial";
+  // Estado/valor: al crear siempre; en seguimiento solo si la gestión es comercial
+  if (!val || (val !== "__nueva__" && !esComercial)) {
+    campos.style.display = "none";
+    if (val && $("ag-c-tipo").value === "Operativo") $("ag-link-nota").textContent = "";
+    const aviso = $("ag-opp-op");
+    if (aviso) aviso.style.display = val && $("ag-c-tipo").value === "Operativo" ? "block" : "none";
+    return;
+  }
   campos.style.display = "block";
 
   $("ag-link-nueva").style.display = val === "__nueva__" ? "grid" : "none";
   if (val === "__nueva__") {
-    $("ag-c-deal-valor").value = "";
-    $("ag-c-deal-canal").value = "";
-    alCambiarCanalDeal();
+    if (!$("ag-c-deal-canal").value) { $("ag-c-deal-valor").value = ""; alCambiarCanalDeal(); }
     sugerirEstadoDesdeEtapa();
-    nota.textContent = "Se creará en el pipeline usando la Cuenta y la Oportunidad de esta gestión.";
+    if (!MAPA_ETAPA_ESTADO[$("ag-c-etapa").value]) $("ag-c-deal-estado").value = "Identificado";
+    nota.textContent = "Se creará en el pipeline con la cuenta elegida.";
   } else {
     const d = deals.find(x => x.id === val);
     if (d) {
       $("ag-c-deal-valor").value = d.valor ?? "";
-      const sugerido = MAPA_ETAPA_ESTADO[$("ag-c-etapa").value] || d.estado || "Identificado";
+      // Una oportunidad ya Ganada o Perdida no cambia de estado por la etapa de la gestión
+      const cerrada = d.estado === "Ganado" || d.estado === "Perdido";
+      const sugerido = cerrada ? d.estado : (MAPA_ETAPA_ESTADO[$("ag-c-etapa").value] || d.estado || "Identificado");
       $("ag-c-deal-estado").value = sugerido;
-      nota.textContent = `La cuenta "${d.cuenta}" se mantiene. Se actualizarán el estado y el valor de la oportunidad.`;
+      nota.textContent = cerrada
+        ? `“${d.oportunidad}” ya está ${d.estado}: se mantiene así salvo que cambies el estado aquí.`
+        : `Se actualizarán el estado y el valor de “${d.oportunidad}” en el pipeline.`;
     }
   }
 }
@@ -913,8 +977,10 @@ function alCambiarCanalDeal() {
 }
 
 function sugerirEstadoDesdeEtapa() {
-  const val = $("ag-c-deal").value;
+  const val = vinculoActual();
   if (!val) return;
+  const d = val !== "__nueva__" ? deals.find(x => x.id === val) : null;
+  if (d && (d.estado === "Ganado" || d.estado === "Perdido")) return;
   const sugerido = MAPA_ETAPA_ESTADO[$("ag-c-etapa").value];
   if (sugerido) $("ag-c-deal-estado").value = sugerido;
 }
@@ -1050,6 +1116,8 @@ function alCambiarCuenta(conservar) {
       $("ag-cta-aex").addEventListener("click", () => { $("ag-c-cuenta").value = info.nombre; ponerModoCuenta("existente"); });
     } else {
       res.innerHTML = nombre.length >= 2 ? chips(null, "Nuevo") : `<span class="hist-meta">Escribe el nombre de la cuenta nueva y su segmento.</span>`;
+      if (/\s[-–\/]\s?|\s?[-–\/]\s/.test(nombre))
+        res.innerHTML += `<span class="warn">⚠ Escribe solo el nombre del cliente: la oportunidad va en su campo (no “Cliente - Proyecto”).</span>`;
       // Posibles duplicados con otro nombre (ej. "Provet" vs "Laboratorios Provet")
       const parecidas = nombre.length >= 3 ? [...indice.values()].filter(x => parecidoCuentas(nombre, x.nombre) >= 0.6).slice(0, 3) : [];
       if (parecidas.length) {
@@ -1062,6 +1130,12 @@ function alCambiarCuenta(conservar) {
   campos.style.display = mostrarSeg ? "grid" : "none";
   $("ag-ct-wrap").style.display = mostrarContactos ? "block" : "none";
   if (!conservar) poblarContactos(info && modoCuenta === "existente" ? info : null);
+  // Oportunidades de esta cuenta (seguimiento). Una cuenta nueva no tiene: pasa a "Nueva".
+  if ($("ag-opp-box")) {
+    poblarSelectDeals();
+    if (!conservar && modoCuenta === "nueva" && modoOpp === "seg") ponerModoOpp("nueva");
+    else alCambiarDeal();
+  }
   renderHistorialCuenta(info && modoCuenta === "existente" ? info.clave : "");
 }
 
@@ -1945,7 +2019,8 @@ function abrirModal(g) {
   $("ag-c-fecha").value = g?.fecha || claveFecha(hoy);
   $("ag-c-hora").value = g?.hora || `${pad(hoy.getHours())}:${pad(hoy.getMinutes())}`;
   $("ag-c-cuenta").value = g?.cuenta || "";
-  $("ag-c-oportunidad").value = g?.oportunidad || "";
+  $("ag-c-oportunidad").value = "";
+  $("ag-c-deal-canal").value = "";
   $("ag-c-segmento").value = g ? segDe(g) : "";
   $("ag-c-negocio").value = NEGOCIOS.includes(g?.negocio) ? g.negocio : "";
   $("ag-c-modalidad").value = g?.modalidad || "";
@@ -1973,11 +2048,18 @@ function abrirModal(g) {
   alCambiarSprint();
   $("ag-btn-eliminar").style.display = (g && esAdmin()) ? "inline-block" : "none";
 
-  // Trazabilidad
-  $("ag-link-wrap").style.display = esComercial ? "block" : "none";
+  // Oportunidad: vinculada → Seguimiento; texto viejo sin vínculo → Sin oportunidad
+  const vinculada = g?.dealId && deals.some(d => d.id === g.dealId);
+  oppLegado = (!vinculada && g?.oportunidad) ? g.oportunidad : "";
   poblarSelectDeals();
-  $("ag-c-deal").value = (g?.dealId && deals.some(d => d.id === g.dealId)) ? g.dealId : "";
-  alCambiarDeal();
+  if (vinculada) {
+    if (![...$("ag-c-deal").options].some(o => o.value === g.dealId)) {
+      const d = deals.find(x => x.id === g.dealId);
+      $("ag-c-deal").add(new Option(`${d.oportunidad} — ${d.estado}`, d.id));
+    }
+    $("ag-c-deal").value = g.dealId;
+  }
+  ponerModoOpp(vinculada ? "seg" : (g ? "sin" : "seg"));
 
   $("ag-modal").classList.add("open");
 }
@@ -1989,7 +2071,8 @@ export function abrirGestionDesdeSprint(datos) {
   abrirModal(null);
   $("ag-c-cuenta").value = datos.cuenta || "";
   alCambiarCuenta();
-  $("ag-c-oportunidad").value = datos.oportunidad || "Recontacto base instalada";
+  oppLegado = datos.oportunidad || "Recontacto base instalada";
+  ponerModoOpp("sin");
   $("ag-c-tipo").value = "Comercial";
   $("ag-c-tipo").dispatchEvent(new Event("change"));
   $("ag-c-etapa").value = "Seguimiento";
@@ -2035,7 +2118,6 @@ async function guardar() {
   const fecha = $("ag-c-fecha").value;
   const escrita = $("ag-c-cuenta").value.trim();
   const info = infoCuenta(escrita);
-  const oportunidad = $("ag-c-oportunidad").value.trim();
   const negocio = $("ag-c-negocio").value;
   const modalidad = $("ag-c-modalidad").value;
   const tipo = $("ag-c-tipo").value;
@@ -2054,6 +2136,20 @@ async function guardar() {
   }
   const cuenta = info ? info.nombre : escrita;
   const segmento = (info && info.segmento) || $("ag-c-segmento").value;
+
+  // ── Oportunidad: seguimiento / nueva / sin oportunidad ──
+  const vinculo = vinculoActual();
+  let oportunidad = "";
+  if (modoOpp === "seg") {
+    const d = deals.find(x => x.id === vinculo);
+    if (!d) { err.textContent = "Elige la oportunidad a la que le haces seguimiento, o usa “✨ Nueva oportunidad” / “⚪ Sin oportunidad”."; return; }
+    oportunidad = d.oportunidad || "";
+  } else if (modoOpp === "nueva") {
+    oportunidad = $("ag-c-oportunidad").value.trim().replace(/\s+/g, " ");
+    if (oportunidad.length < 2) { err.textContent = "Escribe el nombre de la nueva oportunidad."; return; }
+  } else {
+    oportunidad = oppLegado || "Sin oportunidad";
+  }
   // Tipo de cliente automático: cuenta nueva → Nuevo; existente → Existente.
   // Al editar sin cambiar de cuenta se respeta lo que ya tenía.
   const tipoCliente = (editandoId && tipoClienteOriginal && idCuenta(cuentaOriginal) === idCuenta(cuenta))
@@ -2076,7 +2172,6 @@ async function guardar() {
   }
 
   // ── Trazabilidad con el pipeline ──
-  const vinculo = tipo === "Comercial" ? $("ag-c-deal").value : "";
   let dealId = null;
   const btn = $("ag-btn-guardar");
   btn.disabled = true; btn.textContent = "Guardando...";
@@ -2115,6 +2210,9 @@ async function guardar() {
         return;
       }
       dealId = resDeal.id;
+    } else if (vinculo && tipo !== "Comercial") {
+      // Gestión operativa: solo queda asociada a la oportunidad
+      dealId = vinculo;
     } else if (vinculo) {
       // Actualizar la oportunidad existente: estado + valor
       // (la cuenta NO se toca: se mantiene la del pipeline)
