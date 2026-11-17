@@ -1,5 +1,9 @@
 // ═══════════════════════════════════════════════════════════
-// agenda-view.js — v5.3
+// agenda-view.js — v5.4
+// v5.4 (nov 2026): 📅 CALENDARIO estilo Outlook (agenda-calendario.js) como
+//       pestaña por defecto: Día / Semana laboral / Semana / Mes, clic en
+//       espacio vacío = registrar, clic = abrir, arrastrar = mover.
+//       Nuevo campo Duración en la gestión (minutos; las viejas = 60).
 // v5.3 (nov 2026): OPORTUNIDAD con 3 opciones en vez de texto libre:
 //       🔄 Seguimiento (lista de las oportunidades de ESA cuenta en el pipeline),
 //       ✨ Nueva oportunidad (se crea en el pipeline) o ⚪ Sin oportunidad
@@ -65,6 +69,7 @@ import {
   suscribirCuentasSprint
 } from "./firestore-service.js";
 import { ACCIONES_SPRINT, PASOS_RUTA } from "./sprint-config.js";
+import { montarCalendario, refrescarCalendario } from "./agenda-calendario.js";
 import {
   SEGMENTOS, SEGMENTO_TXT, CANALES, ORIGENES_DIRECTO, ORIGEN_INDIRECTO,
   segmentoDeRegistro, normSegmento, nombrePreferido, claveCuenta, parecidoCuentas
@@ -97,6 +102,8 @@ const ETAPAS = ["Identificado", "Seguimiento", "Cotización", "Diseño", "Negoci
 const ETAPA_COLORS = { "Identificado": "#2563EB", "Seguimiento": "#7c3aed", "Cotización": "#d97706", "Diseño": "#dc2626", "Negociación": "#16a34a" };
 const REP_COLORS = ["#2563EB", "#16a34a", "#7c3aed", "#d97706", "#dc2626", "#0d9488"];
 const MESES_NOMBRE = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
+// Duraciones posibles de una gestión (minutos) — para el calendario
+const DURACIONES = [[30, "30 min"], [60, "1 hora"], [90, "1 h 30"], [120, "2 horas"], [180, "3 horas"], [240, "Medio día (4 h)"]];
 // Ciudad única de operación
 const CIUDAD_FIJA = "Bogotá";
 // Mes en que arranca el año fiscal (1 = enero → FY = año calendario).
@@ -445,18 +452,22 @@ function pintarEstructura() {
     </div>
 
     <div class="ag-subtabs">
-      ${esAdmin() ? "" : `<button class="ag-subtab active" id="ag-st-mia">👤 Mi Agenda</button>`}
-      <button class="ag-subtab ${esAdmin() ? "active" : ""}" id="ag-st-sem">🗓 Semana actual</button>
+      <button class="ag-subtab active" id="ag-st-cal">📅 Calendario</button>
+      ${esAdmin() ? "" : `<button class="ag-subtab" id="ag-st-mia">👤 Mi Agenda</button>`}
+      <button class="ag-subtab" id="ag-st-sem">🗓 Semana (lista)</button>
       ${esAdmin() ? `<button class="ag-subtab" id="ag-st-eq">👥 Equipo</button>` : ""}
       <button class="ag-subtab" id="ag-st-mes">📊 Reporte mensual</button>
       <button class="ag-subtab" id="ag-st-cmp">📈 Histórico</button>
     </div>
 
     <!-- ═══ MI AGENDA (solo reps: únicamente SUS gestiones) ═══ -->
-    <div id="ag-sub-mia" style="display:${esAdmin() ? "none" : "block"}"></div>
+    <div id="ag-sub-mia" style="display:none"></div>
+
+    <!-- ═══ CALENDARIO (estilo Outlook) ═══ -->
+    <div id="ag-sub-cal"></div>
 
     <!-- ═══ SEMANA ═══ -->
-    <div id="ag-sub-sem" style="display:${esAdmin() ? "block" : "none"}">
+    <div id="ag-sub-sem" style="display:none">
       <div class="filtros-bar">
         <div class="sem-nav">
           <button id="sem-prev" title="Semana anterior">◀</button>
@@ -585,12 +596,15 @@ function pintarEstructura() {
           <div class="form-grid">
             <div class="form-group"><label class="form-label">Rep *</label>
               <select class="form-select" id="ag-c-rep"></select></div>
-            <div class="form-group"><label class="form-label">Ciudad</label>
-              <input class="form-input ag-ro" id="ag-c-ciudad" value="${CIUDAD_FIJA}" readonly tabindex="-1"/></div>
+            <input type="hidden" id="ag-c-ciudad" value="${CIUDAD_FIJA}"/>
             <div class="form-group"><label class="form-label">Fecha *</label>
               <input class="form-input" id="ag-c-fecha" type="date"/></div>
             <div class="form-group"><label class="form-label">Hora</label>
-              <input class="form-input" id="ag-c-hora" type="time"/></div>
+              <input class="form-input" id="ag-c-hora" type="time" step="900"/></div>
+            <div class="form-group"><label class="form-label">Duración</label>
+              <select class="form-select" id="ag-c-duracion">
+                ${DURACIONES.map(([m, t]) => `<option value="${m}">${t}</option>`).join("")}
+              </select></div>
 
             <!-- 🏢 CUENTA: existente o nueva · contacto -->
             <div class="cta-box">
@@ -742,6 +756,7 @@ function pintarEstructura() {
     $("eq-mes").addEventListener("change", (e) => { eqMes = e.target.value; renderEquipo(); });
   }
   $("ag-st-sem").addEventListener("click", () => mostrarSub("sem"));
+  $("ag-st-cal").addEventListener("click", () => mostrarSub("cal"));
   $("ag-st-mes").addEventListener("click", () => mostrarSub("mes"));
   $("ag-st-cmp").addEventListener("click", () => mostrarSub("cmp"));
 
@@ -795,12 +810,33 @@ function pintarEstructura() {
   $("his-mes").addEventListener("change", (e) => { hisMes = e.target.value; renderHistorico(); });
   $("his-rep").addEventListener("change", (e) => { hisRep = e.target.value; renderHistorico(); });
 
+  // 📅 Calendario
+  montarCalendario($("ag-sub-cal"), {
+    gestiones: () => baseGestiones(),
+    reps: () => repsVisibles(),
+    colorRep: (rep) => REP_COLORS[Math.max(0, repsVisibles().indexOf(rep)) % REP_COLORS.length],
+    puedeEditar,
+    esAdmin: esAdmin(),
+    etiquetaEtapa: (g) => etapaDe(g),
+    onNueva: (fecha, hora) => abrirGestionEn(fecha, hora),
+    onAbrir: (g) => abrirModal(g),
+    onMover: async (g, fecha, hora) => {
+      const res = await actualizarGestion(g.id, { fecha, hora });
+      if (res.ok) toast(`✓ ${g.cuenta || "Gestión"} movida al ${fechaLegible(fecha)}${hora ? " · " + hora : ""}`);
+      else toast("⚠️ " + res.error);
+      return res;
+    }
+  });
+
   // Comparar
   $("cmp-a").addEventListener("change", (e) => { cmpA = e.target.value; renderComparar(); });
   $("cmp-b").addEventListener("change", (e) => { cmpB = e.target.value; renderComparar(); });
 }
 
 function mostrarSub(nombre) {
+  $("ag-st-cal").classList.toggle("active", nombre === "cal");
+  $("ag-sub-cal").style.display = nombre === "cal" ? "block" : "none";
+  if (nombre === "cal") refrescarCalendario();
   const mia = $("ag-st-mia");
   if (mia) {
     mia.classList.toggle("active", nombre === "mia");
@@ -1222,6 +1258,7 @@ function renderHistorialCuenta(clave) {
 // RENDER GENERAL
 // ═══════════════════════════════════════════
 function render() {
+  refrescarCalendario();
   renderMiAgenda();
   renderEquipo();
   renderSemana();
@@ -2018,6 +2055,8 @@ function abrirModal(g) {
   const hoy = new Date();
   $("ag-c-fecha").value = g?.fecha || claveFecha(hoy);
   $("ag-c-hora").value = g?.hora || `${pad(hoy.getHours())}:${pad(hoy.getMinutes())}`;
+  const dur = parseInt(g?.duracion, 10);
+  $("ag-c-duracion").value = DURACIONES.some(([m]) => m === dur) ? String(dur) : "60";
   $("ag-c-cuenta").value = g?.cuenta || "";
   $("ag-c-oportunidad").value = "";
   $("ag-c-deal-canal").value = "";
@@ -2080,6 +2119,14 @@ export function abrirGestionDesdeSprint(datos) {
   $("ag-c-sprint").value = "ruta";
   if (PASOS_RUTA.includes(datos.paso)) $("ag-c-sprint-paso").value = datos.paso;
   alCambiarSprint();
+}
+
+// Abre el formulario con fecha y hora ya puestas (clic en el calendario).
+function abrirGestionEn(fecha, hora) {
+  abrirModal(null);
+  $("ag-c-fecha").value = fecha;
+  $("ag-c-hora").value = hora || "";
+  $("ag-c-cuenta").focus();
 }
 
 // Abre el formulario con la cuenta ya elegida (lo pide la ficha de cuenta).
@@ -2278,6 +2325,7 @@ async function guardar() {
       contactoNombre: c.nombre || "", contactoCargo: c.cargo || "",
       contactoCorreo: c.correo || "", contactoTelefono: c.telefono || "",
       hora: $("ag-c-hora").value,
+      duracion: parseInt($("ag-c-duracion").value, 10) || 60,
       etapa: tipo === "Comercial" ? etapa : "",
       etapaVenta: tipo === "Comercial" ? etapa : "",
       notas: $("ag-c-notas").value.trim(),
